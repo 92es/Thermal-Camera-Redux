@@ -142,5 +142,11 @@ Optional flags: [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-
 - Data logging over time.
 - User temp alarm triggers.
 - 3D solid and mesh surface plots.
+
+## Credits:
+- LeoDJ's Kelvin conversion algorythm from post #216 on EEVblog
+- Les Wright's original Python script and corresponding YT video.
+- Amish Technician's gracious RPi testing. 
+
   
 
