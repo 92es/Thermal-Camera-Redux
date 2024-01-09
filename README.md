@@ -72,33 +72,33 @@ Tested by Amish Technician (from eevblog) on numerous RPi models including RPi Z
 
 Optional flags: [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-thick n]<br />
 
-## Key Bindings:<br />
+## Mouse and Key Bindings:<br />
 
-a z: [In|De]crease Blur <br />
-s x: +/- threshold from avg temp that contols min/max displays and ruler plot colors<br />
-d c: Change interpolated window scale [camera native to fullscreen]<br />
-f v: [In|De]crease Contrast<br />
-g b: Cycle [for|back]wards through interpolation methods<br />
-j m: Cycle [for|back]wards through Color[m]aps<br />
-w  : Cycle through single/dual[horizontal/vertical] [w]indow layouts<br />
-6  : Toggle between fullscreen and current scaled window size<br />
-r  : Toggle [r]ecording (.avi)<br />
-1  : Font<br />
-5  : Reset defaults<br />
-p  : Sna[p]shot (both .png and offline .raw)<br />
-h  : Cycle through overlayed screen data<br />
-t  : Toggle between Celsius and Fahrenheit<br />
-y  : Toggle Historgram filter (for gray scales)<br />
-8  : Rotate display 0, 90, 180, 270 degrees (Portrait and Landscape)<br />
-e  : Toggle Freeze Frame on/off<br />
-o  : Displays and cycles through 5 temp ruler modes<br />
-3  : Ruler plot clip modes: none, outlier, below avg, above avg<br />
-4  : Ruler thickness - 1/5, 1/4, 1/3, 1/2, full height<br />
-   : Keypad Up/Down/Left/Right/Center(5) moves rulers<br />
-   : Left mouse adds user temps or moves rulers<br />
-   : Right mouse removes user temps and disables ruler mode<br />
-? /: Misc stdout help information<br />
-q  : Quit<br />
+- a z: [In|De]crease Blur <br />
+- s x: +/- threshold from avg temp that contols min/max displays and ruler plot colors<br />
+- d c: Change interpolated window scale [camera native to fullscreen]<br />
+- f v: [In|De]crease Contrast<br />
+- g b: Cycle [for|back]wards through interpolation methods<br />
+- j m: Cycle [for|back]wards through Color[m]aps<br />
+- w  : Cycle through single/dual[horizontal/vertical] [w]indow layouts<br />
+- 6  : Toggle between fullscreen and current scaled window size<br />
+- r  : Toggle [r]ecording (.avi)<br />
+- 1  : Select Font<br />
+- 5  : Reset defaults<br />
+- p  : Sna[p]shot (both .png and offline .raw)<br />
+- h  : Cycle through overlayed screen data<br />
+- t  : Toggle between Celsius and Fahrenheit <br />
+- y  : Toggle Historgram Equalization filter <br />
+- 8  : Rotate display 0, 90, 180, 270 degrees (Portrait and Landscape)<br />
+- e  : Toggle Freeze Frame on/off<br />
+- o  : Displays and cycles through 5 temp ruler modes<br />
+- 3  : Ruler plot clip modes: none, outlier, below avg, above avg<br />
+- 4  : Ruler thickness - 1/5, 1/4, 1/3, 1/2, full height<br />
+  -   : Keypad Up/Down/Left/Right/Center(5) moves rulers<br />
+  -   : Left mouse adds user temps or moves rulers<br />
+  -   : Right mouse removes user temps and disables ruler mode<br />
+- / : Misc stdout help information<br />
+- q  : Quit<br />
 
 ## Example:  Full screen horizontal and vertical thermal ruler plots with, 4X scale and video blur settings applied.
   - Green sections of plot lines depict above (average + threshold) temps.
