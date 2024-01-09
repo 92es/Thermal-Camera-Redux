@@ -35,9 +35,9 @@ Features:
     - Single relocatable temp.
     - Vertical and horizontal cross grid of text temps.
     - Individual horizontal or vertical plotting rulers.
-    - Simulteanous horizontal and virtical plotting rulers.  
+    - Simulteanous horizontal and vertical plotting rulers.  
   - Cliping modes include:
-    - no clipping (average baseline is proportional to Min/Max/Avg)
+    - no clipping (average baseline is proportional to Min/Avg/Max distrobution)
     - outlier clipping (average baseline is centered in clippled plot)
     - below average clipping (focus on temps at or above average)
     - above average clipping (focus on temps at or below average)
@@ -45,7 +45,7 @@ Features:
   - Horizontal and Vertical rulers can be displayed simultaenously or sepearately.
 - Ability to add up to 13 user defined temp locations (great for fixed mount bench work).
 - User temp and ruler display modes are mutually exclusive.
-- Min, Average and Max screen temps.
+- Min, Avg and Max screen temps.
 - Thermal color gradient widget with Min/Avg/Max and current focus temp indicators.
 - User input can be entered via keyboard and/or mouse as well as commands redirected to stdin.
   -  Keyboard and mouse input take presendece over redirected stdin command stream.
@@ -96,12 +96,12 @@ o  : Displays and cycles through 5 temp ruler modes<br />
 ? /: Misc stdout help information<br />
 q  : Quit<br />
 
-Example:  Full screen horizontal and vertical thermal ruler plots with video blur settings applied.
+Example:  Full screen horizontal and vertical thermal ruler plots with, 4X scale and video blur settings applied.
   - Green sections of plot lines depict above (average + threshold) temps.
   - White sections of the plot lines depict (average +/- threshold) temps.
   - Red sections of the plot lines depict below (average - threshold) temps.
-  - Ruler focal point is located on the screens Max temp<br />
-  - The gradient scale's ">" marker in the upper right hand corner is Green indicating focal point's respective temp range, above (average + threshold)<br />
+  - Ruler's focal point was relocated on the screen's Max temp location.<br />
+  - The gradient scale's ">" marker in the upper right hand corner is Green indicating focal point's respective temp range, above (average + threshold).<br />
   - Average temp marker "-" in lower right hand corner is White, indicating the screen's current average temp.<br />
 
 ![GIT_HUB_SAMPLE](https://github.com/92es/Thermal-Camera-Redux/assets/76127081/777691ef-8e49-4cb7-9c45-f54b4627b086)
