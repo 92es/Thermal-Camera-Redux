@@ -11,7 +11,7 @@ Ported and updated to Linux C/C++ app based on Les Wright's 21 June 2023 Python 
 A multi-threaded C/C++ app to read, parse, display thermal data from the Topdon TC001 Thermal camera (and clones).<br />
 Rewritten with additional functionality, bug fixes, optimizations and offline post processing.<br />
 
-Features:
+## Features:
 - Live mode reading from USB camera and Offline mode for post processing analysis.
 - Freeze frame, snapshots and recording.
 - 4 layout modes displaying image and thermal data sub-frames.
@@ -53,25 +53,26 @@ Features:
 - User input can be entered via keyboard and/or mouse as well as commands redirected to stdin.
   -  Keyboard and mouse input take presendece over redirected stdin command stream.
 
-Build requires C/C++, OpenCV and pthread libraries.
+## Build requirememts:
+-  Linux, C/C++, OpenCV and pthread libraries.
 
 Thermal Camera Redux:
 	
 Built with display 2560x1600, max:default scale 8:4, rotation 0, default Fahrenheit, 37 colormaps, Jet<br />
 
 Tested on IvyBridge & Coffee Lake Debian 11 PCs with all features working<br />
-Tested by Amish Technician on numerous RPi models including RPi Zero 2w, 2, 3, 4 and 5<br />
+Tested by Amish Technician (from eevblog) on numerous RPi models including RPi Zero 2w, 2, 3, 4 and 5<br />
     using 2023-12-05 release of Raspberry Pi OS desktop 64-bit (Debian 12 bookworm)<br />
 
-Camera Usage: <br />
+## Camera Usage: <br />
   ./redux -d n (where 'n' is the number of the desired video camera)<br />
 
-Offline Usage: <br />
+## Offline Usage: <br />
   ./redux -f input.raw (where input.raw is a raw dump file from ./redux)<br />
 
 Optional flags: [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-thick n]<br />
 
-Key Bindings:<br />
+## Key Bindings:<br />
 
 a z: [In|De]crease Blur <br />
 s x: +/- threshold from avg temp that contols min/max displays and ruler plot colors<br />
@@ -99,13 +100,15 @@ o  : Displays and cycles through 5 temp ruler modes<br />
 ? /: Misc stdout help information<br />
 q  : Quit<br />
 
-Example:  Full screen horizontal and vertical thermal ruler plots with, 4X scale and video blur settings applied.
+## Example:  Full screen horizontal and vertical thermal ruler plots with, 4X scale and video blur settings applied.
   - Green sections of plot lines depict above (average + threshold) temps.
   - White sections of the plot lines depict (average +/- threshold) temps.
   - Red sections of the plot lines depict below (average - threshold) temps.
   - Ruler's focal point was relocated on the screen's Max temp location.<br />
-  - The gradient scale's ">" marker in the upper right hand corner is Green indicating focal point's respective temp range, above (average + threshold).<br />
-  - Average temp marker "-" in lower right hand corner is White, indicating the screen's current average temp.<br />
+    - The gradient scale's ">" marker in the upper right hand corner is Green indicating the focal point's respective temp range, above (average + threshold).<br />
+    - The gradient scale's Avg temp marker "-" in the lower right hand corner is White, indicating the screen's current average temp.<br />
+    - The Green lines extending from the focal points to both the Vertical and Horizontal plot lines indicate the relative temp at the current location.  Longer lines indicates a larger relative delta from the screen's Avg temp. <br />
+    - All thermal ruler features update in real time from thermal data obtained by the camera and as the rulers are repositioned around the screen.
 
 ![GIT_HUB_SAMPLE](https://github.com/92es/Thermal-Camera-Redux/assets/76127081/777691ef-8e49-4cb7-9c45-f54b4627b086)
 
