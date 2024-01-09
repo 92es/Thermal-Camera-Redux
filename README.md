@@ -13,6 +13,8 @@ Rewritten with additional functionality, bug fixes, optimizations and offline po
 
 ## Features:
 - Live mode reading from USB camera and Offline mode for post processing analysis.
+  - Offline mode has great advantages over .png Snapshots because the raw thermal data can be represented with any configuration combinations at a later date as if it were live data.  No longer bound to a single colormap, scale, contrast, filter, etc. included in the static .png image.  Great for post documenting thermal audits depicting differnt data perspectives.
+  - Freeze Frame mode offers an additional level of control in unstable hand held scenarios.
 - Freeze frame, snapshots and recording.
 - 4 layout modes displaying image and thermal data sub-frames.
   - Image sub-frame (Portrait or Landscape)
