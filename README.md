@@ -40,7 +40,7 @@ Rewritten with additional functionality, bug fixes, optimizations and offline po
     - Individual horizontal or vertical plotting rulers.
     - Simulteanous horizontal and vertical plotting rulers.  
   - Cliping modes include:
-    - no clipping (average baseline is proportional to Min/Avg/Max distrobution)
+    - no clipping (average baseline is proportional to Min/Avg/Max distribution)
     - outlier clipping (average baseline is centered in clippled plot)
     - below average clipping (focus on temps at or above average)
     - above average clipping (focus on temps at or below average)
