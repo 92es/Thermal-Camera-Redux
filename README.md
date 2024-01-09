@@ -32,6 +32,13 @@ Rewritten with additional functionality, bug fixes, optimizations and offline po
 - 3 user selectable fonts.
 - 37 colormaps.
 - 7 interpolation methods.
+  - Nearest
+  - Linear
+  - Cubic
+  - Area
+  - Lanczos
+  - Linear Exact
+  - Nearest Exact
 - Video blur and contrast settings.
 - Histogram Equalization filter.
 - User settable Threshold delta from average temp in degrees C or F.
