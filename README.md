@@ -15,6 +15,15 @@ Rewritten with additional functionality, bug fixes, optimizations and offline po
 - Live mode reading from USB camera and Offline mode for post processing analysis.
 - Freeze frame, snapshots and recording.
 - 4 layout modes displaying image and thermal data sub-frames.
+  - Image sub-frame (Portrait or Landscape)
+  - Thermal sub-frame (Portrait or Landscape)
+  - Image sub-frame on left, Thermal sub-frame on right (Portrait or Landsacpe)
+  - Image sub-frame on top, Thermal sub-frame on bottom (Portrait or Landscape)
+- 4 display modes
+  - With translucent OSD config menu
+  - With translucent OSD key and mouse bindings menu
+  - With out translucent OSD menu
+  - With out translucent OSD menu and overlayed graphics, video image only
 - Portrait and Landscape rotations in 90 degree increments.
 - Translucent OSD settings and keybinding menus.
 - Integer scaling from 1X native resolution to full screen.
