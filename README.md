@@ -128,5 +128,9 @@ Optional flags: [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-
 
 ![GIT_HUB_USER_TEMPS](https://github.com/92es/Thermal-Camera-Redux/assets/76127081/0d37e539-a657-4fad-bf3b-73ffe86100be)
 
-
+## Potential Future Upgrades:
+- Data logging over time.
+- User temp alarm triggers.
+- 3D solid and mesh surface plots.
+  
 
