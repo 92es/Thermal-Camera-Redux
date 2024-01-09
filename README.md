@@ -4,7 +4,6 @@
 Ported and updated to Linux C/C++ app based on Les Wright's 21 June 2023 Python app.<br />
   - All prior licenses apply.<br />
   - https://github.com/leswright1977/PyThermalCamera<br />
-  - https://youtube.com/leslaboratory<br />
   
 A multi-threaded C/C++ app to read, parse, display thermal data from the Topdon TC001 Thermal camera (and clones).<br />
 Rewritten with additional functionality, bug fixes, optimizations and offline post processing.<br />
@@ -12,38 +11,43 @@ Rewritten with additional functionality, bug fixes, optimizations and offline po
 Features:
 - Live mode reading from USB camera and Offline mode for post processing analysis.
 - Freeze frame, snapshots and recording.
-- 4 Layout modes displaying image and thermal data sub-frames.
+- 4 layout modes displaying image and thermal data sub-frames.
 - Portrait and Landscape rotations in 90 degree increments.
-- Translucent OSD settings and help keybinding menus.
-- Integer scaling from 1X native resolution to Full Screen.
+- Translucent OSD settings and keybinding menus.
+- Integer scaling from 1X native resolution to full screen.
 - Switchable Celsius / Fahrenheit displays.
-- Scalable video and fonts.
+- Scalable video, fonts and graphic overlays.
 - 3 user selectable fonts.
-- 37 Colormaps.
-- 7 Interpolation methods.
-- Video Blur and Contrast settings.
-- User settable Threshold from average temp in degrees C/F.
+- 37 colormaps.
+- 7 interpolation methods.
+- Video blur and contrast settings.
+- User settable Threshold delta from average temp in degrees C or F.
 - Color coded widgets depict:
   -  below (average - threshold) temps
   -  (average +/- threshold) temps
   -  above (average + threshold) temps
-- Horizontal and Vertical scrollable thermal plotting rulers.
-  - Landscape ruler plots 256 temps.
-  - Portrait ruler plots 192 temps.
+- Horizontal and vertical scrollable thermal plotting rulers.
+  - Landscape ruler plots 256 plus 3, 5 or 7 text temps.
+  - Portrait ruler plots 192 plus 3, 5 or 7 text temps.
 - Thermal rulers have 5 modes with 4 clipping and 5 size settings.
+  - 5 modes include:
+    - Single relocatable temp.
+    - Vertical and horizontal cross grid of text temps.
+    - Individual horizontal or vertical plotting rulers.
+    - Simulteanous horizontal and virtical plotting rulers.  
   - Cliping modes include:
     - no clipping (average baseline is proportional to Min/Max/Avg)
     - outlier clipping (average baseline is centered in clippled plot)
     - below average clipping (focus on temps at or above average)
     - above average clipping (focus on temps at or below average)
   - Size settings include 1/5, 1/4, 1/3, 1/2 and full height ruler widths.
-  - Horizontal and Vertical rulers can be displayed indidually or sepearately.
+  - Horizontal and Vertical rulers can be displayed simultaenously or sepearately.
 - Ability to add up to 13 user defined temp locations (great for fixed mount bench work).
 - User temp and ruler display modes are mutually exclusive.
-- Average, Min and Max screen temps.
-- Thermal color gradient widget with Min/Max/Avg and current focus temp indicators.
-- User input can be entered via keyboard and mouse as well as commands redirected to stdin.
-  -  Keyboard and mouse input take presendece over redirected stdin commands.
+- Min, Average and Max screen temps.
+- Thermal color gradient widget with Min/Avg/Max and current focus temp indicators.
+- User input can be entered via keyboard and/or mouse as well as commands redirected to stdin.
+  -  Keyboard and mouse input take presendece over redirected stdin command stream.
 
 Build requires C/C++, OpenCV and pthread libraries.
 
@@ -56,10 +60,10 @@ Tested by Amish Technician on numerous RPi models including RPi Zero 2w, 2, 3, 4
     using 2023-12-05 release of Raspberry Pi OS desktop 64-bit (Debian 12 bookworm)<br />
 
 Camera Usage: <br />
-	./redux -d n (where 'n' is the number of the desired video camera)<br />
+  ./redux -d n (where 'n' is the number of the desired video camera)<br />
 
 Offline Usage: <br />
-	./redux -f input.raw (where input.raw is a raw dump file from ./redux)<br />
+  ./redux -f input.raw (where input.raw is a raw dump file from ./redux)<br />
 
 Optional flags: [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-thick n]<br />
 
@@ -95,9 +99,9 @@ Example:  Full screen horizontal and vertical thermal ruler plots with video blu
   - Green sections of plot lines depict above (average + threshold) temps.
   - White sections of the plot lines depict (average +/- threshold) temps.
   - Red sections of the plot lines depict below (average - threshold) temps.
-  - Ruler focal point is located on the screens Max temp, thus the gradient scale's ">" marker in
-    the upper right hand corner is Green indicating its respective temp range, above (average + threshold)
-    Average temp marker "-" in lower right hand corner is White, indicating the screens current average temp.
+  - Ruler focal point is located on the screens Max temp<br />
+  - The gradient scale's ">" marker in the upper right hand corner is Green indicating focal point's respective temp range, above (average + threshold)<br />
+  - Average temp marker "-" in lower right hand corner is White, indicating the screen's current average temp.<br />
 
 ![GIT_HUB_SAMPLE](https://github.com/92es/Thermal-Camera-Redux/assets/76127081/777691ef-8e49-4cb7-9c45-f54b4627b086)
 
