@@ -21,6 +21,7 @@ Features:
 - 37 colormaps.
 - 7 interpolation methods.
 - Video blur and contrast settings.
+- Histogram Equalization filter.
 - User settable Threshold delta from average temp in degrees C or F.
 - Color coded widgets depict:
   -  below (average - threshold) temps
