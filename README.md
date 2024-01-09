@@ -100,7 +100,7 @@ Optional flags: [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-
 - / : Misc stdout help information<br />
 - q  : Quit<br />
 
-## Example:  Full screen horizontal and vertical thermal ruler plots with, 4X scale and video blur settings applied.
+## Example 1:  Full screen horizontal and vertical thermal ruler plots with, 4X scale and video blur settings applied.
   - Green sections of plot lines depict above (average + threshold) temps.
   - White sections of the plot lines depict (average +/- threshold) temps.
   - Red sections of the plot lines depict below (average - threshold) temps.
@@ -111,4 +111,13 @@ Optional flags: [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-
     - All thermal ruler features update in real time from thermal data obtained by the camera and as the rulers are repositioned around the screen.
 
 ![GIT_HUB_SAMPLE](https://github.com/92es/Thermal-Camera-Redux/assets/76127081/777691ef-8e49-4cb7-9c45-f54b4627b086)
+
+## Example 2: User Temp mode with 13 added users temps
+  - If only the lady had this app when she ordered hot coffee through the McDonald's drive thru order window.
+  - This could be useful for fixed mount bench work.
+  - Hi/Lo alarm triggers could be added to user temp points in the future for temp range monitoring and automated logging.
+
+![GIT_HUB_USER_TEMPS](https://github.com/92es/Thermal-Camera-Redux/assets/76127081/0d37e539-a657-4fad-bf3b-73ffe86100be)
+
+
 
