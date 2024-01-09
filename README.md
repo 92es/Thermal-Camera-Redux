@@ -113,7 +113,7 @@ Optional flags: [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-
 ![GIT_HUB_SAMPLE](https://github.com/92es/Thermal-Camera-Redux/assets/76127081/777691ef-8e49-4cb7-9c45-f54b4627b086)
 
 ## Example 2: User Temp mode with 13 added users temps
-  - If only the lady had this app when she ordered hot coffee through the McDonald's drive thru order window.
+  - If only the lady had this app when she ordered hot coffee from the McDonald's drive thru order window ...
   - This could be useful for fixed mount bench work.
   - Hi/Lo alarm triggers could be added to user temp points in the future for temp range monitoring and automated logging.
 
