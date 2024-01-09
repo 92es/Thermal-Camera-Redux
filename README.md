@@ -3,7 +3,10 @@
 
 Ported and updated to Linux C/C++ app based on Les Wright's 21 June 2023 Python app.<br />
   - All prior licenses apply.<br />
-  - https://github.com/leswright1977/PyThermalCamera<br />
+  - https://github.com/leswright1977/PyThermalCamera - Python script <br />
+  - https://github.com/92es/Thermal-Camera-Redux     - Ported C/C++ app <br />
+
+  
   
 A multi-threaded C/C++ app to read, parse, display thermal data from the Topdon TC001 Thermal camera (and clones).<br />
 Rewritten with additional functionality, bug fixes, optimizations and offline post processing.<br />
