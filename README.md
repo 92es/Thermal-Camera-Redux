@@ -45,9 +45,9 @@ Rewritten with additional functionality, bug fixes, optimizations and offline po
 - Thermal rulers have 5 modes with 4 clipping and 5 size settings.
   - 5 modes include:
     - Single relocatable temp.
-    - Vertical and horizontal cross grid of text temps.
-    - Individual horizontal or vertical plotting rulers.
-    - Simulteanous horizontal and vertical plotting rulers.  
+    - Vertical and horizontal relocatable cross grid of text temps.
+    - Individual horizontal or vertical relocatable plotting rulers.
+    - Simulteanous horizontal and vertical relocatable plotting rulers.  
   - Cliping modes include:
     - no clipping (average baseline is proportional to Min/Avg/Max distribution)
     - outlier clipping (average baseline is centered in clippled plot)
