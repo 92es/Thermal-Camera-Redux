@@ -44,6 +44,7 @@ Rewritten with additional functionality, bug fixes, optimizations and offline po
 - Video blur and contrast settings.
 - Histogram Equalization filter.
 - User settable Threshold delta from average temp in degrees C or F.
+- Live gradient colormap scale widget.
 - Color coded widgets depict:
   -  below (average - threshold) temps
   -  (average +/- threshold) temps
