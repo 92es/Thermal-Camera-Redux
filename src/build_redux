@@ -1,0 +1,59 @@
+#!/bin/bash
+
+# Build Thermal Camera Redux 
+
+echo "Building redux and test_driver ..."
+
+rm ./redux
+
+# Change build flags based on your hardware
+# Ivybridge Intel Chips
+#CFLAGS='-mavx -msse4.2 -msse4.1 -malign-double -march=ivybridge'
+
+# Skylake Intel Chips
+CFLAGS='-mavx2 -msse4.2 -msse4.1 -malign-double -march=skylake'
+
+# 2023-12-05 release of Raspberry Pi OS desktop 64-bit (Debian 12 bookworm):
+# RPi 2 Model B v1.2  BCM2837    ARMv8-A     (64/32-bit)  4× Cortex-A53 900 MHz   
+#CFLAGS='-mcpu=cortex-a53 -pipe -fomit-frame-pointer'
+
+# RPi 3 Model B v1.2  BCM2837B0  ARMv8-A     (64/32-bit)  4× Cortex-A53 1.4 GHz    
+#CFLAGS='-mcpu=cortex-a53 -pipe -fomit-frame-pointer'
+
+# RPi Zero 2 W        BCM2710A1  ARMv8-A    (64/32-bit)   4× Cortex-A53 1 GHz       
+#CFLAGS='-mcpu=cortex-a53 -pipe -fomit-frame-pointer'
+
+# RPi 4               BCM2711    ARMv8-A    (64/32-bit)   4× Cortex-A72 1.8 GHz    
+#CFLAGS='-mcpu=cortex-a72 -pipe -fomit-frame-pointer'
+
+# RPi 5               BCM2712    ARMv8.2-A  (64/32-bit)   4× Cortex-A76 2.4 GHz    
+#CFLAGS='-mcpu=cortex-a76 -pipe -fomit-frame-pointer'
+
+
+# Setup default startup configuration options
+
+# ROTATION options:         0, 90, 180, 270
+# USE_CELSIUS options:      0, 1
+# DEFAULT_COLORMAP options: 0 - 36
+# USE_ASSERT:               0, 1
+# HUD_ALPHA:                0.0 = Full Transparent, 1.0 Full Opaque, Default 0.4
+
+#  VGA -  800 x  480 is a max 2X scale
+#        1280 x  720 is a max 3X scale
+#        1920 x 1080 is a max 5X scale
+#        2560 x 1440 is a max 7X scale
+
+# 2560 x 1600 is a max 8X scale
+DEFAULT_FLAGS='-DDEFAULT_FONT=0 -DDEFAULT_COLORMAP=4 -DROTATION=0 -DDISPLAY_WIDTH=2560 -DDISPLAY_HEIGHT=1600 -DUSE_CELSIUS=0 -DHUD_ALPHA=0.4'
+#DEFAULT_FLAGS='-DDEFAI:T_FONT=0 -DDEFAULT_COLORMAP=4 -DROTATION=0 -DDISPLAY_WIDTH=1024 -DDISPLAY_HEIGHT=768 -DUSE_CELSIUS=0 -DHUD_ALPHA=0.4'
+#DEFAULT_FLAGS='-DDEFAI:T_FONT=0 -DDEFAULT_COLORMAP=4 -DROTATION=0 -DDISPLAY_WIDTH=320 -DDISPLAY_HEIGHT=240 -DUSE_CELSIUS=0 -DHUD_ALPHA=0.4'
+#DEFAULT_FLAGS='-DDEFAI:T_FONT=0 -DDEFAULT_COLORMAP=4 -DROTATION=0 -DDISPLAY_WIDTH=1280 -DDISPLAY_HEIGHT=1024 -DUSE_CELSIUS=0 -DHUD_ALPHA=0.4'
+
+# Compile and link Redux Thermal Camera code
+g++ -Wall -Wextra -O3 -ffast-math ${DEFAULT_FLAGS} ${CFLAGS} -DUSE_ASSERT=0 -I/usr/include/opencv4 tc001.cpp thread.cpp -o redux -lpthread `pkg-config --cflags --libs opencv4`
+
+
+# Debug for gprof, valgrind and perf
+#g++ -Wall -Wextra -ffast-math -pg -ggdb3 ${DEFAULT_FLAGS} ${CFLAGS} -DUSE_ASSERT=0 -I/usr/include/opencv4 tc001.cpp thread.cpp -o redux -lpthread `pkg-config --cflags --libs opencv4`
+
+gcc -Wall test_driver.c -o test_driver
