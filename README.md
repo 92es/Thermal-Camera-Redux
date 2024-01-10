@@ -80,7 +80,7 @@ Thermal Camera Redux:
 Built with display 2560x1600, max:default scale 8:4, rotation 0, default Fahrenheit, 37 colormaps, Jet<br />
 
 Tested on IvyBridge & Coffee Lake Debian 11 PCs with all features working<br />
-Tested by Amish Technician (from eevblog) on numerous RPi models including RPi Zero 2w, 2, 3, 4 and 5<br />
+Tested by Amish Technician (from EEVblog) on numerous RPi models including RPi Zero 2w, 2, 3, 4 and 5<br />
     using 2023-12-05 release of Raspberry Pi OS desktop 64-bit (Debian 12 bookworm)<br />
 
 ## Camera Usage: <br />
@@ -146,7 +146,7 @@ Optional flags: [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-
 ## Credits:
 - LeoDJ's Kelvin conversion algorithm from post #216 on EEVblog
 - Les Wright's original Python script and corresponding YT video.
-- Amish Technician's gracious RPi testing. 
+- Amish Technician's gracious RPi testing and valuable feedback. 
 
   
 
