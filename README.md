@@ -144,6 +144,12 @@ Optional flags: [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-
 
 ![Screenshot](media/GIT_HUB_USER_TEMPS.png)
 
+## Example 3: Dual scrolling ruler mode.
+  - 1/5 screen height ruler size.
+  - Proportional, non-clipping display mode.
+
+![Screenshot](media/GIT_HUB_COLD.png)
+
 ## Potential Future Upgrades:
 - Data logging over time.
 - User temp alarm triggers.
