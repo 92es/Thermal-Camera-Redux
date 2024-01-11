@@ -12,6 +12,8 @@ A multi-threaded C/C++ app to read, parse, display thermal data from the Topdon 
 Rewritten with additional functionality, bug fixes, optimizations and offline post processing.<br />
 
 ## Features:
+<img align="right" src="media/22_of_37_Colormaps.png">
+
 - Live mode reading from USB camera and Offline mode for post processing analysis.
   - Offline mode has great advantages over .png Snapshots because the raw thermal data can be represented with any configuration combinations at a later date as if it were live data.  No longer bound to a single colormap, scale, contrast, filter, etc. included in the static .png image.  Great for post documenting thermal audits depicting differnt data perspectives.
   - Freeze Frame mode offers an additional level of control in unstable hand held scenarios.
@@ -33,6 +35,7 @@ Rewritten with additional functionality, bug fixes, optimizations and offline po
 - Scalable video, fonts and graphic overlays.
 - 3 user selectable fonts.
 - 37 colormaps.
+  - 22 of 37 colormaps shown to the right.
 - 7 interpolation methods.
   - Nearest
   - Linear
@@ -129,14 +132,14 @@ Optional flags: [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-
     - The Green lines extending from the focal points to both the Vertical and Horizontal plot lines indicate the relative temp at the current location.  Longer lines indicates a larger relative delta from the screen's Avg temp. <br />
     - All thermal ruler features update in real time from thermal data obtained by the camera and as the rulers are repositioned around the screen.
 
-![GIT_HUB_SAMPLE](https://github.com/92es/Thermal-Camera-Redux/assets/76127081/777691ef-8e49-4cb7-9c45-f54b4627b086)
+![Screenshot](media/GIT_HUB_SAMPLE.png)
 
 ## Example 2: User Temp mode with 13 added users temps
   - If only the lady had this app when she ordered hot coffee from the McDonald's drive thru order window ...
   - This could be useful for fixed mount bench work.
   - Hi/Lo alarm triggers could be added to user temp points in the future for temp range monitoring and automated logging.
 
-![GIT_HUB_USER_TEMPS](https://github.com/92es/Thermal-Camera-Redux/assets/76127081/0d37e539-a657-4fad-bf3b-73ffe86100be)
+![Screenshot](media/GIT_HUB_USER_TEMPS.png)
 
 ## Potential Future Upgrades:
 - Data logging over time.
