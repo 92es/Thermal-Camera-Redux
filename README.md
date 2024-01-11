@@ -35,7 +35,10 @@ Rewritten with additional functionality, bug fixes, optimizations and offline po
 - Scalable video, fonts and graphic overlays.
 - 3 user selectable fonts.
 - 37 colormaps.
-  - 22 of 37 colormaps shown to the right.
+  - 22 OpenCV stock colormaps dipicted to the right.
+  - 7 inverted OpenCV stock colormaps.
+  - 7 generated colormaps.
+  - Raw feed, no colormap.
 - 7 interpolation methods.
   - Nearest
   - Linear
