@@ -158,7 +158,8 @@ Optional flags: [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-
 ## Credits:
 - LeoDJ's Kelvin conversion algorithm from post #216 on EEVblog
 - Les Wright's original Python script and corresponding YT video.
-- Amish Technician's gracious RPi testing and valuable feedback. 
+- Amish Technician's gracious RPi testing and valuable feedback.
+- Cynfab for thermal range testing on the InfiRay P2 Pro.
 
   
 
