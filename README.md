@@ -79,7 +79,8 @@ Rewritten with additional functionality, bug fixes, optimizations and offline po
   -  Keyboard and mouse input take presendece over redirected stdin command stream.
 
 ## Build requirememts:
--  Linux, C/C++, OpenCV and pthread libraries.
+-  Linux, C/C++, OpenCV(V4L) and pthread libraries.
+-  Optional build flags optimized for weak and single core / single threaded hardware.
 
 Thermal Camera Redux:
 	
@@ -95,7 +96,10 @@ Tested by Amish Technician (from EEVblog) on numerous RPi models including RPi Z
 ## Offline Usage: <br />
   ./redux -f input.raw (where input.raw is a raw dump file from ./redux)<br />
 
-Optional flags: [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-thick n]<br />
+## Optional flags: <br />
+	[-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-thick n]
+	[-help] [-quiet] [-snapshot [prefix]]
+
 
 ## Mouse and Key Bindings:<br />
 
