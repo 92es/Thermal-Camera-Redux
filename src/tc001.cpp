@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <limits.h>
 #include <signal.h>
 #include <assert.h>
@@ -20,7 +21,7 @@ using namespace cv;
 
 #include "thread.h" // threads and FIFO ring buffer
 
-#define VERSION_STR "0.9.0"
+#define VERSION_STR "0.9.1"
 /*****************************************************************************************
 
   NOTE: No implied or expressed useability guarantee or warranty.  
@@ -29,8 +30,30 @@ using namespace cv;
 
   Change log from response comments:
 
-  09-01-2024 - Initial Github Release 0.9.0
+  2024-01-09 - 0.9.0 - Initial Github Release
+  2024-01-15 - 0.9.1 - Modifications to better accommodate weaker hardware platforms
+	RPi feedback by Amish Technician and ODriod feedback by 5U4GB.
+	Added [-help] [-quiet] [-snapshot [prefix]] command line arguments
+	Added -DDRAW_SINGLE_THREAD - for single core/single thread hardware
+	Added -DFAST_DRAG          - reduced resolution drag scroll for marginal hardware
+	                           - plots every 8th temp during drag scrolls
+	Added -DNO_DRAG            - jump scrolling (no drag scroll) for weak hardware
+	Restructured code for optional single/multi core/thread builds
+	Added more error handling and startup timing stats
+	Color coded camera connection error messages and added reconnection instructions
+	Restructured stdout messages
+	RPi 2 v1.1 reported to have horizontal video banding. Banding also presented 
+	on VLC playback so not specific to Thermal-Camera-Redux
+	-DNO_TS=1 yields 197.603 seconds with long script, latency-performance
+	-DNO_TS=0 yields 198.033 seconds with long script, latency-performance
+	Minor optimizations to Histogram Equalization filter
+		196.806 seconds with long script
   
+  Notes: Explore more fixed-point for platforms without hardware FPU
+  	  1 degree Fahrenheight = 255.928 Kelvin
+  	100 degree Fahrenheight = 310.928 Kelvin
+  	  1 degree Celsius      = 274.15  Kelvin
+  	100 degree Celsius      = 373.15  Kelvin
 
   Switching between "tuned-adm latency-performance" and "tuned-adm desktop" with
   unrestricted FPS rates varies stdin scripted performance by a factor of [3-5]X:
@@ -39,6 +62,8 @@ using namespace cv;
 
 #define ARRAY_COUNT(a) (int)((int)sizeof(a) / (int)sizeof(a[0]))
 
+#define FF() fflush(stdout); fflush(stderr);
+
 #define divmod(numerator, denominator, quotient, remainder) \
 	*quotient  = numerator / denominator; \
 	*remainder = numerator % denominator;
@@ -46,8 +71,15 @@ using namespace cv;
 #if USE_ASSERT
 #define ASSERT(a) assert a
 #else
-#define ASSERT(a)
+#define ASSERT(a)	/* compile out assert statements */
 #endif
+
+#if NO_TS
+#define TS(a)		/* compile out (T)iming (S)tatistics call overhead */
+#else
+#define TS(a)	a 
+#endif
+
 
 #define NATIVE_FPS 25.0
 
@@ -63,7 +95,6 @@ static int offline_fps = OFFLINE_FPS;
 #define noHaloLineType		LINE_8
 #define haloLineType		LINE_8
 #define fgLineType		LINE_AA
-
 
 #define USE_CLONE 1   // which is faster mat.clone() or mat.copyTo()
 
@@ -140,6 +171,67 @@ int64_t currentTimeNanos(){
 #endif
 }
 
+extern int64_t initStartMicros();
+
+static int64_t startMicros = initStartMicros();
+static int64_t mainPrivateMicros;
+
+static int notDone = 1;
+int64_t initStartMicros() {
+	if ( notDone )  {
+		notDone     = 0;
+		startMicros = currentTimeMicros();
+	}
+	return startMicros;
+}
+
+static int quietStdout      = 0;
+static int takeSnapshot     = 0;
+static int takeRecording    = 0;
+const char *snapshotPrefix  = "";
+const char *recordingPrefix = "";
+
+// AlphaNumeric or '-' or '_', NOT starting with '-'
+int validatePrefix( const char *prefix ) {
+	if ( 0 == prefix ) {
+		return 0;
+	}
+
+	int len = strlen( prefix );
+
+	if ( len <= 0 ) {
+		return 0;
+	}
+
+	// Differentiate from prefix and -flag
+	if ( '-' == prefix[0] ) {
+		return 0;
+	}
+
+	for ( int i = 0; i < len; i++ ) {
+		if ( ! ( isalnum( prefix[i] ) ||
+			     '-' == prefix[i] ||
+			     '_' == prefix[i] ) ) {
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+int fileExists( const char *filename ) {
+	return ( 0x00 == access( filename, F_OK ) );
+}
+
+void dumpV4L2() {
+	// Check to see if there are any USB video cameras BEFORE calling 
+	// v4l2-ctl that would generate an error message
+	if ( fileExists( "/dev/video0" ) ) {
+		printf("\n");
+		system("v4l2-ctl --list-devices --all\n");
+		printf("\n");
+	}
+}
 
 #define WINDOW_NAME "Thermal Camera Redux"
 
@@ -202,8 +294,8 @@ static const char *Argv0  = "";
 #define SIZE(s,a,b) s.width = (a); s.height = (b);
 
 // THREAD LOAD BALANCING
-float kelvinX[max(FIXED_TC_WIDTH, FIXED_TC_HEIGHT)];  // Grab entire row of temps at once
-float kelvinY[max(FIXED_TC_WIDTH, FIXED_TC_HEIGHT)];  // Grab entire col of temps at once
+unsigned short kelvinX[max(FIXED_TC_WIDTH, FIXED_TC_HEIGHT)];  // Grab entire row of temps at once
+unsigned short kelvinY[max(FIXED_TC_WIDTH, FIXED_TC_HEIGHT)];  // Grab entire col of temps at once
 
 Scalar *scalarX[max(FIXED_TC_WIDTH, FIXED_TC_HEIGHT)];  // Calc entire row of colors at once
 Scalar *scalarY[max(FIXED_TC_WIDTH, FIXED_TC_HEIGHT)];  // Calc entire col of colors at once
@@ -350,7 +442,7 @@ static Mat inverseHSLCmap       = createHSLCmap( 1); // HSL Hot(violet) to Cold(
 // Support No Colormaps, Pre-Defined Colormaps, Inverted Colormaps, User Defined Colormaps ...
 CMap *cmaps[] = {
 	newCmap( (ColormapTypes)(-1),	0, "None",	COLORMAP_NONE ),   // No colormap, system's default colormap
-
+#if 1
 	newCmap( COLORMAP_AUTUMN,	0, "Autumn",	COLORMAP_INDEX ),  // System default colormaps and inversions
 	newCmap( COLORMAP_AUTUMN,	1, "Inv Autumn",	COLORMAP_INDEX ), 
 	newCmap( COLORMAP_BONE,		0, "Bone",	COLORMAP_INDEX ),
@@ -388,6 +480,7 @@ CMap *cmaps[] = {
 	newCmap( &red2BlueBlackUCCmap,	0, "C2BlackUC",	COLORMAP_MATRIX ), // User defined colormap
 	newCmap( &red2BlueWhiteLCmap,	0, "C2WhiteL",	COLORMAP_MATRIX ), // User defined colormap
 	newCmap( &red2BlueWhiteUCCmap,	0, "C2WhiteUC",	COLORMAP_MATRIX )  // User defined colormap
+#endif
 };
 
 #define MAX_CMAPS  ARRAY_COUNT( cmaps )
@@ -403,8 +496,8 @@ CMap *cmaps[] = {
 
 void applyMyColorMap( InputArray src, OutputArray dst, int cmapsIndex ) {
 
-	ASSERT(( 0 <= cmapsIndex ));
-	ASSERT(( cmapsIndex < MAX_CMAPS ));
+	ASSERT(( 0 <= cmapsIndex ))
+	ASSERT(( cmapsIndex < MAX_CMAPS ))
 
 	if        ( COLORMAP_INDEX == cmaps[ cmapsIndex ]->type ) {
 		applyColorMap( src, dst, abs(cmaps[ cmapsIndex ]->cmap.index) );
@@ -440,7 +533,9 @@ void applyMyColorMap( InputArray src, OutputArray dst, int cmapsIndex ) {
 void hslToRgb(float h, float s, float l, unsigned int *red, unsigned int *green, unsigned int *blue);
 
 Mat createRed2BlueBlackWhiteCmap(int ramp) {
-// printf("%s(%d)\n", __func__, __LINE__);
+    initStartMicros();
+
+//printf("%s(%d)\n", __func__, __LINE__);
     Mat cmap(COLORMAP_ROWS, 1, CV_8UC3);
 
     unsigned char *ucPtr = &((unsigned char *)(cmap.datastart))[0];
@@ -565,9 +660,9 @@ Inter Inters[] = {
 	{ INTER_LINEAR_EXACT,	"Lin Exact" },
 	{ INTER_NEAREST_EXACT,	"Near Exact" },
 #if 0 // These crash resize()
-	{ INTER_MAX, "Max" },            // resize() Crash
-	{ WARP_FILL_OUTLIERS, "Fill" },  // resize() Crash
-	{ WARP_INVERSE_MAP, "Inverse" }, // resize() Crash
+	{ INTER_MAX,		"Max" },     // resize() Crash
+	{ WARP_FILL_OUTLIERS,	"Fill" },    // resize() Crash
+	{ WARP_INVERSE_MAP,	"Inverse" }, // resize() Crash
 #endif
 };
 
@@ -587,7 +682,8 @@ typedef struct {
 	long  xScaled, yScaled;	 // Pre scaled y, x thread optimization
 
 	// Floats and ints are 4 bytes
-	float       kelvin;	 // kelvin temp
+	//float       kelvin;	 // kelvin temp
+	unsigned short kelvin;	 // kelvin temp
 	float       celsius;	 // celsius temp
 	int         type;
 	ActiveState active;
@@ -613,12 +709,13 @@ int Use_Histogram; // GLOBAL KLUGE UNTIL REWORKED
 #define kelvin2Celsius(kel)     ((float)(((float)(kel) / 64.0) - 273.15))
 #define celsius2Kelvin(cel)      ((long)round(((float)(cel) + 273.15) * 64.0 ))
 #define fahr2Kelvin(fahr)         (long)( celsius2Kelvin ( ((float)(fahr) - 32.0) * 5.0 / 9.0 ) )
-#define celsius2Fahr(cel)      ((((float)cel * 9.0) / 5.0) + 32.0 )
+//#define celsius2Fahr(cel)      ((((float)cel * 9.0) / 5.0) + 32.0 )
+#define celsius2Fahr(cel)         (((float)cel * 1.8) + 32.0 )  /* 1.8 is (9.0 / 5.0) */
 }
 
 #else
 
-float kelvin2Celsius(long kelvin) { // # LeoDJ's Kelvin conversion algorithm, post #216
+float kelvin2Celsius(unsigned short kelvin) { // # LeoDJ's Kelvin conversion algorithm, post #216
 	return ( ((float)kelvin / 64.0) - 273.15 );
 }
 
@@ -640,7 +737,8 @@ long fahr2Kelvin(float fahr) {
 }
 
 float celsius2Fahr( float celsius ) {
-	return ( (((float)celsius * 9.0)/5.0) + 32.0 );
+	//return ( (((float)celsius * 9.0)/5.0) + 32.0 );
+	return ( ((float)celsius * 1.8) + 32.0 );  /* 1.8 is (9.0 / 5.0) */
 }
 
 #endif
@@ -677,10 +775,10 @@ WF WFs[] = {
 #define MAX_WFS    ARRAY_COUNT( WFs )
 
 typedef enum {
-	HUD_ON=0,
+	HUD_HUD=0,
 	HUD_HELP,
 	HUD_OFF,
-	HUD_NO_DRAWINGS,
+	HUD_ONLY_VIDEO,
 	HUD_MAX_MOD // Rollover count, not actual HUD mode
 } HUDFormat;
 
@@ -691,10 +789,10 @@ const char *hudFormatStr( HUDFormat hudFormat ) {
 // Strip off "HUD_" prefix
 #define MY_CASE(a) case (a): return (const char *)(#a + sizeof("HUD"));
 	switch ( hudFormat ) {
-		MY_CASE(HUD_ON)
+		MY_CASE(HUD_HUD)
 		MY_CASE(HUD_HELP)
 		MY_CASE(HUD_OFF)
-		MY_CASE(HUD_NO_DRAWINGS)
+		MY_CASE(HUD_ONLY_VIDEO)
 		default: break;
 	}
 	return "Undefined";
@@ -717,21 +815,21 @@ typedef struct {
 	int rad;
 	int inters;
 
-	int sW;               // scaled Width  of SINGLE or WINDOW_DOUBLE - resize(sW,sH)
-	int sH;               // scaled Height of SINGLE or WINDOW_DOUBLE - resize(sW,sH)
+	int sW;			// scaled Width  of SINGLE or WINDOW_DOUBLE - resize(sW,sH)
+	int sH;			// scaled Height of SINGLE or WINDOW_DOUBLE - resize(sW,sH)
 
-	int scaledSFWidth;    // scaled SINGLE Frame Width   (scale * TC_WIDTH)
-	int scaledSFHeight;   // scaled SINGLE Frame Height  (scale * TC_HEIGHT)
+	int scaledSFWidth;	// scaled SINGLE Frame Width   (scale * TC_WIDTH)
+	int scaledSFHeight;	// scaled SINGLE Frame Height  (scale * TC_HEIGHT)
 	int windowFormat;
 	int lastHelpScale = -1; // Optimization so HELP doesn't have to update every frame
 
 	int64_t frameCounter;
-	double alpha;         // see Inters[]
+	double alpha;		// see Inters[]
 	int64_t startMills;
 	double fps;
 	time_t recordStartTime; // Seconds time(null)
 	HUDFormat hud;          // HUDFormats
-	bool wD;           // WindowDouble if DOUBLE_WIDTH or DOUBLE_HIGH
+	bool wD;		// WindowDouble if DOUBLE_WIDTH or DOUBLE_HIGH
 	bool useCelsius;
 	bool recording;
 	bool recordingActive = false;
@@ -789,8 +887,8 @@ typedef enum {
 	RULERS_OFF = 0,
 	RULERS_ONE_TEMP,
 	RULERS_CROSS_HAIR,
-	RULERS_HORIZONTAL,
-	RULERS_VERTICAL,
+	RULERS_HORIZ,
+	RULERS_VERT,
 	RULERS_BOTH,
 	RULERS_MAX_MOD // Rollover count, not actual ruler mode
 } RulerModes;
@@ -810,16 +908,20 @@ typedef enum {
 static int        rulerThickness = MIN_RULER_THICKNESS;
 static int        rulerBoundFlag = BOUND_PROPORTIONAL;
 static int        minBound, maxBound;
+static int        drawHorizMin, drawHorizMax;
+static int        drawVertMin,  drawVertMax;
 static RulerModes rulersOn = RULERS_OFF; // Rotate through ruler modes
 static int        rulersX  = FIXED_TC_WIDTH  / 2;
 static int        rulersY  = FIXED_TC_HEIGHT / 2;
+static int        lastX = -1, lastY = -1;
 
-static int Rulers_Both		  = (( RULERS_BOTH == rulersOn ) && ( HUD_NO_DRAWINGS != controls.hud ));
-static int Rulers_XOR		  = (( RULERS_VERTICAL == rulersOn || RULERS_HORIZONTAL == rulersOn) && ( HUD_NO_DRAWINGS != controls.hud ));
-static int Rulers_Horiz		  = (( RULERS_HORIZONTAL == rulersOn ) && ( HUD_NO_DRAWINGS != controls.hud ));
-static int Rulers_Vert		  = (( RULERS_VERTICAL   == rulersOn ) && ( HUD_NO_DRAWINGS != controls.hud ));
-static int Rulers_Both_Horiz      = (( RULERS_BOTH == rulersOn || RULERS_HORIZONTAL == rulersOn ) && ( HUD_NO_DRAWINGS != controls.hud ));
-static int Rulers_Both_Vert       = (( RULERS_BOTH == rulersOn || RULERS_VERTICAL   == rulersOn ) && ( HUD_NO_DRAWINGS != controls.hud ));
+static int Rulers_And_Drag	  = 0;
+static int Rulers_Both		  = (( RULERS_BOTH == rulersOn ) && ( HUD_ONLY_VIDEO != controls.hud ));
+static int Rulers_XOR		  = (( RULERS_VERT == rulersOn || RULERS_HORIZ == rulersOn) && ( HUD_ONLY_VIDEO != controls.hud ));
+static int Rulers_Horiz		  = (( RULERS_HORIZ == rulersOn ) && ( HUD_ONLY_VIDEO != controls.hud ));
+static int Rulers_Vert		  = (( RULERS_VERT  == rulersOn ) && ( HUD_ONLY_VIDEO != controls.hud ));
+static int Rulers_Both_Horiz      = (( RULERS_BOTH == rulersOn || RULERS_HORIZ == rulersOn ) && ( HUD_ONLY_VIDEO != controls.hud ));
+static int Rulers_Both_Vert       = (( RULERS_BOTH == rulersOn || RULERS_VERT  == rulersOn ) && ( HUD_ONLY_VIDEO != controls.hud ));
 static int Rulers_Both_Horiz_Vert =  ( Rulers_Both_Horiz || Rulers_Both_Vert );
 static int Max_Ruler_Thickness    =  ( MAX_RULER_THICKNESS == rulerThickness );
 static int Horiz_Min_Bound        = ( !(Max_Ruler_Thickness && ((TC_HEIGHT - 1) == rulersY)) );
@@ -837,8 +939,8 @@ const char *rulerModesStr( RulerModes rulerMode ) {
 		MY_CASE(RULERS_OFF)
 		MY_CASE(RULERS_ONE_TEMP)
 		MY_CASE(RULERS_CROSS_HAIR)
-		MY_CASE(RULERS_HORIZONTAL)
-		MY_CASE(RULERS_VERTICAL)
+		MY_CASE(RULERS_HORIZ)
+		MY_CASE(RULERS_VERT)
 		MY_CASE(RULERS_BOTH)
 		MY_CASE(RULERS_MAX_MOD)
 		default: break;
@@ -865,9 +967,12 @@ void clearPtf(ProcessedThermalFrame *ptf) {
 extern void reScale(ProcessedThermalFrame *ptf, int value, bool flag);
 extern void getTemperature(Mat *thermalFrame, Temperature &temp);
 
+
 typedef struct {
 	int64_t thermMicros;	// thermalDataThread's benchmarks
 	int64_t imageMicros;	// imageDataThread's   benchmarks
+	int64_t vertMicros;
+	int64_t horizMicros;
 	int64_t rotMicros;	// drawGraphics        benchmarks
 	int64_t mainMicros;	// [read thru imshow]  benchmarks
 	int64_t readMicros;	// [read thru imshow]  benchmarks
@@ -918,6 +1023,7 @@ typedef struct {
 	int  maxStates            =  ARRAY_COUNT( MyThreadStates );
 	int  blockingState        =  0; // initial start state
 	int  clientCount          =  0; 
+	int  log                  =  0;
 	int  maxClientCount       =  NUMBER_OF_CLIENTS;
     	pthread_mutex_t condMutex =  PTHREAD_MUTEX_INITIALIZER;
         pthread_cond_t  cond      =  PTHREAD_COND_INITIALIZER;
@@ -945,29 +1051,43 @@ void exitAllThreads() {
 	}
 }
 
+
+
 void incAndWait( IncWaitMutex *mutex, int *threadState, int blockingState ) { 
 	// increment, advance, broadcast and wait
 
+#define LOG(a)
+
 	// Thread synchronization
 	pthread_mutex_lock( &mutex->condMutex );
+		LOG( if (mutex->log) { printf("a %d\n",blockingState); FF(); } )
 
 		*threadState = blockingState; 
 		mutex->clientCount++;
 		// Verify client is in sync with other blocked clients
-		ASSERT(( mutex->blockingState == blockingState ));
+		ASSERT(( mutex->blockingState == blockingState ))
 		if ( mutex->maxClientCount <= mutex->clientCount ) {
+			LOG( if (mutex->log) { printf("b %d\n",blockingState); FF(); } )
 			// zero blocked clientCount and advance to next round robin blocking state
 			mutex->clientCount   = 0;
+			LOG( if (mutex->log) { printf("c %d\n",blockingState); FF(); } )
 			mutex->blockingState = 
 				mutex->states[ ((mutex->blockingState + 1) % mutex->maxStates) ];
+			LOG( if (mutex->log) { printf("d %d\n",blockingState); FF(); } )
 			// start threads racing to next state
 			pthread_cond_broadcast( &mutex->cond );
+			LOG( if (mutex->log) { printf("e %d\n",blockingState); FF(); } )
 		} else {
+			LOG( if (mutex->log) { printf("\tblock %d\n",blockingState); FF(); } )
 			while ( mutex->blockingState == blockingState ) {
+				LOG( if (mutex->log) { printf("\t\t> wait %d\n",blockingState); FF(); } )
 				pthread_cond_wait( &mutex->cond, &mutex->condMutex );
+				LOG( if (mutex->log) { printf("\t\t< wait %d\n",blockingState); FF(); } )
 			}
+			LOG( if (mutex->log) { printf("\t\tunblock %d\n",blockingState); FF(); } )
 		}
 
+		LOG( if (mutex->log) { printf("f %d\n",blockingState); FF(); } )
 	pthread_mutex_unlock( &mutex->condMutex );
 }
 
@@ -980,18 +1100,8 @@ void incAndWait( IncWaitMutex *mutex, int *threadState, int blockingState ) {
 void dumpFrameInfo(Mat *frame);
 
 // cmapScale display controls
-#define CMAP_AUTO_RANGE_DEFAULT 1
 long minPixel = LONG_MAX; // pixel value from imageFrame ( NOT thermalFrame, same linearI as thermalFrame )
 long maxPixel = LONG_MIN; // pixel value from imageFrame ( NOT thermalFrame, same linearI as thermalFrame )
-long cmapAutoRange = CMAP_AUTO_RANGE_DEFAULT;  // Toggle color map auto ranging
-
-void unlockColormapRange(int toggle) {
-	if (toggle) {
-		cmapAutoRange = !cmapAutoRange;
-	}
-	minPixel = LONG_MAX;
-	maxPixel = LONG_MIN;
-}
 
 // Getting rid of stack overhead and using global variables saved 1%
 long centerOfPixel(long loc) 
@@ -1061,9 +1171,10 @@ static void clearUserTemps(ProcessedThermalFrame *ptf) {
 	rulersOn   = RULERS_OFF;
 	ptf->userI = ptf->userCount = 0; // Optimization for rendering
 
-	for (int i = 0; i < MAX_USER_TEMPS; i++) {	
-		users[i].active = ACTIVE_OFF;
-	}
+#undef  DO_USER
+#define DO_USER(n) user_##n->active = ACTIVE_OFF;
+
+	DO_ALL(); // Loop unroll
 }
 
 static void rulers(ProcessedThermalFrame *ptf, int horizontalOffset, int verticalOffset, int keyPress) {
@@ -1073,7 +1184,8 @@ static void rulers(ProcessedThermalFrame *ptf, int horizontalOffset, int vertica
 	horizontalOffset = centerOfPixelNODIV( horizontalOffset );
 	verticalOffset   = centerOfPixelNODIV( verticalOffset );
 
-	if ( tempRulersOn ) {
+	// Skip switch statement if ( 0 == keyPress )
+	if ( keyPress && tempRulersOn ) {
 		// case (-105) // keypad up
 		// case (-103) // keypad down
 		// case (-106) // keypad left
@@ -1129,53 +1241,51 @@ static void rulers(ProcessedThermalFrame *ptf, int horizontalOffset, int vertica
 	// Center temp at intersection of horiztonal and vertical rulers
 	userTemp( *user_CENTER_OF_RULER_INDEX, centerX, centerY, MyScale );
 
-	// Scale down number of ruler temps based on MyScale 
-	// and what comfortably fits in PORTRAIT width
-	//     1X scale has 3 temps per row/col
-	//     2X scale has 5 temps per row/col
-	// [3-N]X scale has 7 temps per row/col
-	int reduceBy  = (MyScale < 2) ? 4 :
-		        (MyScale < 3) ? 2 : 0;
-
-	// Take even # off horizontally and vertically
-	int itemsPerRowCol = ((MAX_USER_TEMPS - 1) / 2) - reduceBy;
-
 #undef  DO_USER
 #define DO_USER(n) user_##n->active = ACTIVE_OFF;
 
 	if ( RULERS_ONE_TEMP == tempRulersOn ) {
-		DO_ALL_BUT_CENTER(); // Loop unroll
+		// Already cleared on entry
+		// DO_ALL_BUT_CENTER(); // Loop unroll
 	} else {
-		int originalMax = (MAX_USER_TEMPS - 1) / 2;
+		// Scale down number of ruler temps based on MyScale
+		// and what comfortably fits in PORTRAIT width
+		//     1X scale has 3 temps per row/col
+		//     2X scale has 5 temps per row/col
+		// [3-N]X scale has 7 temps per row/col
+		int reduceBy  = (MyScale < 2) ? 4 :
+			        (MyScale < 3) ? 2 : 0;
+
+		#define originalMax    ((MAX_USER_TEMPS - 1) / 2)
 
 		// Take even # off horizontally and vertically
-		int horizMax    = originalMax - reduceBy;
+		int itemsPerRowCol = ( originalMax - reduceBy );
 
-		if (RULERS_VERTICAL == tempRulersOn) {
+		// Take even # off horizontally and vertically
+		#define horizMax    itemsPerRowCol
+
+		if (RULERS_VERT == tempRulersOn) {
 			// Turn off horizontal ruler temps
-			DO_ALL_HORIZ(); // Loop unroll
+			// Already cleared on entry
+			// DO_ALL_HORIZ(); // Loop unroll
 		} else { // Prepare horizontal ruler temps
 			int delta = (MyScale * TC_WIDTH) / (itemsPerRowCol + 1);
 			int x     = delta;
 			int y     = centerY;
 	
-			for ( int i = 0; i < horizMax; i+=2, x += delta ) {
+			for ( int i = 0; i < horizMax; i += 2, x += delta ) {
 				userTemp( users[i  ], centerX + x, y, MyScale );
 				userTemp( users[i+1], centerX - x, y, MyScale );
-			}
-
-			for ( int i = horizMax; i < originalMax; i++ ) {
-				users[i].active = ACTIVE_OFF; 
-				ASSERT((i != CENTER_OF_RULER_INDEX));
 			}
 		}
 
 		// Take even # off horizontally and vertically
 		int vertMax = (MAX_USER_TEMPS - 1) - reduceBy;
 
-		if (RULERS_HORIZONTAL == tempRulersOn) {
+		if (RULERS_HORIZ == tempRulersOn) {
 			// Turn off vertical ruler temps
-			DO_ALL_VERT(); // Loop unroll
+			// Already cleared on entry
+			//DO_ALL_VERT(); // Loop unroll
 		} else { // Prepare vertical ruler temps
 			int delta = (MyScale * TC_HEIGHT) / (itemsPerRowCol + 1);
 			int x     = centerX;
@@ -1185,16 +1295,11 @@ static void rulers(ProcessedThermalFrame *ptf, int horizontalOffset, int vertica
 				userTemp( users[i  ], x, centerY + y, MyScale );
 				userTemp( users[i+1], x, centerY - y, MyScale );
 			}
-
-			for ( int i = vertMax; i < CENTER_OF_RULER_INDEX; i++ ) {
-				users[i].active = ACTIVE_OFF; 
-				ASSERT((i != CENTER_OF_RULER_INDEX));
-			}
 		}
 	}
 
 	ptf->userI     = 0;
-	ptf->userCount = MAX_USER_TEMPS;
+	ptf->userCount = MAX_USER_TEMPS; // Can have ACTIVE_OFF entries
 	rulersOn       = tempRulersOn;
 }
 
@@ -1237,28 +1342,44 @@ typedef struct {
 
 MouseRulerDebounce MRD;
 
+#define FAST_DRAG_N 8 // Low resolution drag for low power hardware
+
 // Handle 1 or more mouse events / frame
 // onMouseCallback is called during the waitKeyEx() call
 static void onMouseCallback( int event, int x, int y, int, void* ptr ) {
 	// Complete callback as fast as possible
 
-//printf( "%s(%d): %d(%d, %d)\n", __func__, __LINE__, event, x, y ); fflush(stdout);
+//printf( "%s(%d): %d(%d, %d)\n", __func__, __LINE__, event, x, y ); FF();
 
 	if ( leftDragOff && (EVENT_MOUSEMOVE == event) ) {
 		return; // Ignore mouse hover events unless we want to implement XEyes
 	}
 
+#if NO_DRAG // Use jump scroll on weak hardware like RPi 1 or RPi 2
+	#define AND_NOT_LEFT_DRAG_OFF
+	#define CASE_EVENT_MOUSE_MOVE
+	#define IF_MOUSE_MOVE_RETURN
+#else
+	#define AND_NOT_LEFT_DRAG_OFF	&& ( ! leftDragOff )
+	#define CASE_EVENT_MOUSE_MOVE	case EVENT_MOUSEMOVE:
+	#define IF_MOUSE_MOVE_RETURN	if ( EVENT_MOUSEMOVE == event) { return; }
+
 	if        ( EVENT_LBUTTONDOWN == event ) {
 		leftDragOff = 0;
 	} else if ( (EVENT_MOUSEMOVE != event) && ( ! leftDragOff ) ) {
 		leftDragOff = 1;
+#if FAST_DRAG // Low resolution drag for low power hardware
+		lastX = lastY = -1;  // Force FAST_DRAG rulers to update once more
+#endif
 	}
+#endif
 
 	switch( event ) {
-		case EVENT_MOUSEMOVE:
+		CASE_EVENT_MOUSE_MOVE
+
 		case EVENT_LBUTTONDOWN: {
 
-			if ( rulersOn && ( ! leftDragOff ) ) {
+			if ( rulersOn	AND_NOT_LEFT_DRAG_OFF ) {
 				// Debounce multiple mouse/ruler events occuring in single frame
 				// N:1 reduction of calls to normalizeCB() and rulers()
 				MRD.mouseActive++;
@@ -1267,9 +1388,7 @@ static void onMouseCallback( int event, int x, int y, int, void* ptr ) {
 				return;
 			}
 
-			if ( EVENT_MOUSEMOVE == event ) {
-				return;
-			}
+			IF_MOUSE_MOVE_RETURN
 
 			// Process non-ruler click events
 	
@@ -1384,7 +1503,7 @@ void resetDefaults() {
 
 	resetFrameCounter();
 
-	controls.hud          = HUD_ON;
+	controls.hud          = HUD_HUD;
 
 	controls.inters       = 2; // INTER_CUBIC
 	controls.useCelsius   = Use_Celsius = USE_CELSIUS;
@@ -1395,9 +1514,6 @@ void resetDefaults() {
 	controls.threshold.celsius = 2;
 	controls.cmapCurrent  = DEFAULT_COLORMAP_INDEX;
 	strcpy(controls.snaptime, "None");
-	cmapAutoRange         = CMAP_AUTO_RANGE_DEFAULT;
-	unlockColormapRange(0);
-
 }
 
 static int ColorScaleWidth = 12;
@@ -1412,7 +1528,6 @@ static int HelpHeight      = TC_HEIGHT;
 #define MAX_HELP_TEXT_ROWS (19 + 1)  // Was (24 + 1)
 #define MAX_HUD_TEXT_ROWS  ( 9 + 1)
 
-//const char * LONGEST_HUD_STRING  = " Map: Twighlight Shift+Hist ";
 const char * LONGEST_HUD_STRING  = "Map: Twighlight Shift+Hist";
 const char * LONGEST_HELP_STRING = "L mb: Add temps, mv rulers ";
 
@@ -1532,7 +1647,6 @@ static float maxF;
 static float avgF;
 static float rulerBoundMaxKelvin;
 static float rulerBoundMinKelvin;
-static float thresholdF;
 static float minusThresholdKelvin;
 static float plusThresholdKelvin;
 static float maxAvgOffsetF;
@@ -1546,7 +1660,7 @@ static Point hBase_src, hBase_dst;
 static Point hBase_b,   hBase_c;
 static Point vBase_src, vBase_dst;
 static Point vBase_b,   vBase_c;
-static	Point vPerp, hPerp;
+static Point vPerp, hPerp;
 static Scalar *vScalar;
 static Scalar *hScalar;
 static int copAnchorX;
@@ -1563,8 +1677,8 @@ static float arrowScaleH;
 float getCelsius(Mat *thermalFrame, int x, int y) {
 	unsigned short *usStartPtr = &((unsigned short *)(thermalFrame->datastart))[0];
 
-	ASSERT(( x < TC_WIDTH));
-	ASSERT(( y < TC_HEIGHT));
+	ASSERT(( x < TC_WIDTH))
+	ASSERT(( y < TC_HEIGHT))
 
 	int linearI = (y * TC_WIDTH) + x;
 
@@ -1591,10 +1705,10 @@ float getRulerKelvinFactor( float heightWidth ) {
 }
 
 // Optimization: Converted to use native kelvin to eliminate numerous C/F conversion math
-void getRulerXPoints( Mat *thermalFrame, float *kelvin, Point *points0, Point *points1, int x, int y, int xMax, int anchorY) {
+void getRulerXPoints( Mat *thermalFrame, unsigned short *kelvin, Point *points0, Point *points1, int x, int y, int xMax, int anchorY) {
 	ProcessedThermalFrame *ptf = threadData.ptf;
 
-	float avgKelvin    = ptf->avg.kelvin;
+	unsigned short avgKelvin = ptf->avg.kelvin;
 	// Adjust for: 
 	//	PORTRAIT / LANDSCAPE (only if Full ruler thickness)
 	//	Full or Fractional ruler thickness
@@ -1604,15 +1718,48 @@ void getRulerXPoints( Mat *thermalFrame, float *kelvin, Point *points0, Point *p
 		y = TC_HEIGHT - y;
 	}
 
-	ASSERT(( y < TC_HEIGHT));
+	ASSERT(( y < TC_HEIGHT))
 
 	// Start with Row Y offset
 	unsigned short *usRowPtr = &((unsigned short *)(thermalFrame->datastart))[ y * TC_WIDTH ];
 
+#if 0
+	float f[TC_WIDTH * 2];
+
+#define TIMES 10000
+
+	uint64_t t1 = currentTimeMicros();
+	for ( int i = 0; i < TIMES; i++ ) { for ( int j = 0; j < TC_WIDTH; j++ ) { kelvin[j] = usRowPtr[j]; } }
+	uint64_t t2 = currentTimeMicros();
+	for ( int i = 0; i < TIMES; i++ ) { for ( int j = 0; j < TC_WIDTH; j++ ) { f[j]      = usRowPtr[j]; } }
+	uint64_t t3 = currentTimeMicros();
+	printf("short %ld, float %ld\n", (t2 - t1) , (t3 - t2) );
+/*
+	short 114, float 652  // times vary based optimization flags
+	short 111, float 633
+	short 115, float 601
+	short 107, float 661
+*/
+
+#endif
+
+
+#if FAST_DRAG // Low resolution drag for low power hardware
+	int dragInc = Rulers_And_Drag ? FAST_DRAG_N : 1;
+	int minCalc = dragInc - 1;
+
+	kelvin[ rulersX ] = usRowPtr[ rulersX ];
+
+	x = dragInc / 2; // Center reduced resolution plot
+#else
+	#define dragInc 1
+	#define minCalc 0
+#endif
+
 	float kTmp;
 	int   tmpY;
-	for ( ; x < xMax; x++ ) {
-		ASSERT(( x < TC_WIDTH));
+	for ( ; x < xMax; x += dragInc ) {
+		ASSERT(( x < TC_WIDTH))
 
 		kelvin[ x ] = usRowPtr[ x ];
 
@@ -1627,21 +1774,21 @@ void getRulerXPoints( Mat *thermalFrame, float *kelvin, Point *points0, Point *p
 		POINT( points1[x], points0[x].x + sX,
 				   points0[x].y + sY );
 
-		if ( 0 < x ) {
+		if ( minCalc < x ) {
 			// (float) cast improves color averaging transitions
-			kTmp = ( (float)(kelvin[ x - 1 ] + kelvin[ x ]) / 2.0 );
-			scalarX[ x - 1 ] = ( (kTmp < minusThresholdKelvin) ? &RULER_MIN_COLOR :
-					     (kTmp > plusThresholdKelvin)  ? &RULER_MAX_COLOR :
-						                             &RULER_MID_COLOR );
+			kTmp = ( (float)(kelvin[ x - dragInc ] + kelvin[ x ]) / 2.0 );
+			scalarX[ x - dragInc ] = ( (kTmp < minusThresholdKelvin) ? &RULER_MIN_COLOR :
+					           (kTmp > plusThresholdKelvin)  ? &RULER_MAX_COLOR :
+						                                   &RULER_MID_COLOR );
 		}
 	}
 }
 
 // Optimization: Converted to use native kelvin to eliminate numerous C/F conversion math
-void getRulerYPoints( Mat *thermalFrame, float *kelvin, Point *points0, Point *points1, int x, int y, int yMax, int anchorX ) {
+void getRulerYPoints( Mat *thermalFrame, unsigned short *kelvin, Point *points0, Point *points1, int x, int y, int yMax, int anchorX ) {
 	ProcessedThermalFrame *ptf = threadData.ptf;
 
-	float avgKelvin    = ptf->avg.kelvin;
+	unsigned short avgKelvin = ptf->avg.kelvin;
 	// Adjust for: 
 	//	PORTRAIT / LANDSCAPE (only if Full ruler thickness)
 	//	Full or Fractional ruler thickness
@@ -1651,15 +1798,28 @@ void getRulerYPoints( Mat *thermalFrame, float *kelvin, Point *points0, Point *p
 		x = TC_WIDTH - x;
 	}
 
-	ASSERT(( x < TC_WIDTH));
+	ASSERT(( x < TC_WIDTH))
 
 	// Start with Column X offset
 	unsigned short *usColPtr = &((unsigned short *)(thermalFrame->datastart))[ x ];
 
+
+#if FAST_DRAG // Low resolution drag for low power hardware
+	int dragInc = Rulers_And_Drag ? FAST_DRAG_N : 1;
+	int minCalc = dragInc - 1;
+
+	kelvin[ rulersY ] = usColPtr[ rulersY ];
+
+	y = dragInc / 2; // Center reduced resolution plot
+#else
+	#define dragInc 1
+	#define minCalc 0
+#endif
+
 	float kTmp;
 	int   tmpX;
-	for ( ; y < yMax; y++ ) {
-		ASSERT(( y < TC_HEIGHT));
+	for ( ; y < yMax; y += dragInc ) {
+		ASSERT(( y < TC_HEIGHT))
 
 		kelvin[ y ] = ( usColPtr[ (y * TC_WIDTH) ] );
 
@@ -1674,12 +1834,12 @@ void getRulerYPoints( Mat *thermalFrame, float *kelvin, Point *points0, Point *p
 		POINT( points1[y], points0[y].x + sX,
 				   points0[y].y + sY );
 
-		if ( 0 < y ) {
+		if ( minCalc < y ) {
 			// (float) cast improves color averaging transitions
-			kTmp = ( (float)(kelvin[ y - 1 ] + kelvin[ y ]) / 2.0 );
-			scalarY[ y - 1 ] = ( (kTmp < minusThresholdKelvin) ? &RULER_MIN_COLOR :
-					     (kTmp > plusThresholdKelvin)  ? &RULER_MAX_COLOR :
-						                             &RULER_MID_COLOR );
+			kTmp = ( (float)(kelvin[ y - dragInc ] + kelvin[ y ]) / 2.0 );
+			scalarY[ y - dragInc ] = ( (kTmp < minusThresholdKelvin) ? &RULER_MIN_COLOR :
+					           (kTmp > plusThresholdKelvin)  ? &RULER_MAX_COLOR :
+						                                   &RULER_MID_COLOR );
 		}
 	}
 }
@@ -1690,8 +1850,8 @@ void getTemperature(Mat *thermalFrame, Temperature &temp) {
 	int x = temp.col;
 	int y = temp.row;
 
-	ASSERT(( x < TC_WIDTH));
-	ASSERT(( y < TC_HEIGHT));
+	ASSERT(( x < TC_WIDTH))
+	ASSERT(( y < TC_HEIGHT))
 
 	temp.linearI = (y * TC_WIDTH) + x;
 	temp.kelvin  = usStartPtr[ temp.linearI ];
@@ -1748,7 +1908,7 @@ void calcTempDisplayLocations( Temperature &temp ) {
 	if        ( controls.hud == HUD_HELP ) { // Avoid writing temps over HUD text
 		if ( x < HelpWidth and y < HelpHeight )
 			xOffset = xOffset + (HelpWidth - x);
-	} else if ( controls.hud == HUD_ON ) { // Avoid writing temps over HUD text
+	} else if ( controls.hud == HUD_HUD ) { // Avoid writing temps over HUD text
 		if ( x < HudWidth and y < HudHeight )
 			xOffset = xOffset + (HudWidth - x);
 	}
@@ -1807,8 +1967,10 @@ void processThermalFrame( ProcessedThermalFrame *ptf, Mat *thermalFrame ) {
 
 	if ( RERENDER_OPTIMIZATION ) {
 
-		kminPixel = ptf->minPixel.kelvin = LONG_MAX;
-		kmaxPixel = ptf->maxPixel.kelvin = LONG_MIN;
+		kminPixel = LONG_MAX;
+		kmaxPixel = LONG_MIN;
+		ptf->minPixel.kelvin = USHRT_MAX;
+		ptf->maxPixel.kelvin = 0;
 
 		lminPixel = 0;
 		lmaxPixel = 0;
@@ -1825,8 +1987,11 @@ void processThermalFrame( ProcessedThermalFrame *ptf, Mat *thermalFrame ) {
 
 		long lmin = 0;
 		long lmax = 0;
-		long kmin = ptf->min.kelvin = LONG_MAX;
-		long kmax = ptf->max.kelvin = LONG_MIN;
+
+		ptf->min.kelvin = USHRT_MAX;
+		ptf->max.kelvin = 0;
+		unsigned short kmin = USHRT_MAX;
+		unsigned short kmax = 0;
 
 		// Use image frame, thermal frame or both for RGB rendering, snapshot and recording
 		//
@@ -1834,11 +1999,9 @@ void processThermalFrame( ProcessedThermalFrame *ptf, Mat *thermalFrame ) {
 		// Optimized loop with minimal indexes, variables and structure dives
 		unsigned short *usKelvinPtr   =  usStartPtr;
 		unsigned short *usMaxPtr      = &usStartPtr[TC_WIDTH * TC_HEIGHT];
-       		//unsigned short *usImgPtr      = &((unsigned short *)(imageFrame.datastart))[0];
-		// Find end of 2nd thermal frame
 		long            ktotal        = 0; // Calculate average temps in thermal frame
 		// ************* BEGIN LOOP UNROLL ***************************
-		for ( ; (usKelvinPtr < usMaxPtr); usKelvinPtr += 8 /*, usImgPtr += 8 */) {
+		for ( ; (usKelvinPtr < usMaxPtr); usKelvinPtr += 8 ) {
 			// Linear Parsing
 			// long kelvin = usKelvinPtr[0] + (usKelvinPtr[1] << 8); // LSByte + MSByte
 
@@ -1918,15 +2081,15 @@ void processThermalFrame( ProcessedThermalFrame *ptf, Mat *thermalFrame ) {
 		// TODO - FIXME - Make scale slightly shorter so Min/Max temps are not pushed inwards
 		// Colormap scale has highest temps on top and lowest temps on bottom
 		float heightDelta  = (TC_HEIGHT - 1);
-		ptf->maxPixel.row  = heightDelta * 0.0 / 5.0;
-		ptf->avg4Pixel.row = heightDelta * 1.0 / 5.0;
-		ptf->avg3Pixel.row = heightDelta * 2.0 / 5.0;
-		ptf->avg2Pixel.row = heightDelta * 3.0 / 5.0;
-		ptf->avg1Pixel.row = heightDelta * 4.0 / 5.0;
-		ptf->minPixel.row  = heightDelta * 5.0 / 5.0;
+		ptf->maxPixel.row  = 0;
+		ptf->avg4Pixel.row = 0.2 * heightDelta;
+		ptf->avg3Pixel.row = 0.4 * heightDelta;
+		ptf->avg2Pixel.row = 0.6 * heightDelta;
+		ptf->avg1Pixel.row = 0.8 * heightDelta;
+		ptf->minPixel.row  =       heightDelta;
 
 		// Colormap scale temps are vertical column aligned
-		float widthDelta   = (TC_WIDTH - 1);
+		long widthDelta    = (TC_WIDTH - 1); // No need to convert from float to long
 		ptf->maxPixel.col  = widthDelta;
 		ptf->avg4Pixel.col = widthDelta;
 		ptf->avg3Pixel.col = widthDelta;
@@ -1980,10 +2143,10 @@ void processThermalFrame( ProcessedThermalFrame *ptf, Mat *thermalFrame ) {
 
 	if ( RERENDER_OPTIMIZATION ) {
 
-		ptf->avg1Pixel.celsius = (minPixelCelsius + (minMaxRange * 1.0 / 5.0));
-		ptf->avg2Pixel.celsius = (minPixelCelsius + (minMaxRange * 2.0 / 5.0));
-		ptf->avg3Pixel.celsius = (minPixelCelsius + (minMaxRange * 3.0 / 5.0));
-		ptf->avg4Pixel.celsius = (minPixelCelsius + (minMaxRange * 4.0 / 5.0));
+		ptf->avg1Pixel.celsius = (minPixelCelsius + (minMaxRange * 0.2));
+		ptf->avg2Pixel.celsius = (minPixelCelsius + (minMaxRange * 0.4));
+		ptf->avg3Pixel.celsius = (minPixelCelsius + (minMaxRange * 0.6));
+		ptf->avg4Pixel.celsius = (minPixelCelsius + (minMaxRange * 0.8));
 
 		// Colormap thermal gradiant scale temps
 		float avgCelsius  = ptf->avg.celsius;
@@ -1997,13 +2160,13 @@ void processThermalFrame( ProcessedThermalFrame *ptf, Mat *thermalFrame ) {
 		ptf->avgLevelPixel.col     = TC_WIDTH-1;
 
 		// Leave off C/F for cmapScale display
-		scaleTemp( ptf->minPixel,      "" ); // labelCF );
-		scaleTemp( ptf->avgLevelPixel, "" ); // labelCF );
-		scaleTemp( ptf->maxPixel,      "" ); // labelCF );
-		scaleTemp( ptf->avg1Pixel,     "" ); // labelCF );
-		scaleTemp( ptf->avg2Pixel,     "" ); // labelCF );
-		scaleTemp( ptf->avg3Pixel,     "" ); // labelCF );
-		scaleTemp( ptf->avg4Pixel,     "" ); // labelCF );
+		scaleTemp( ptf->minPixel,      "" );
+		scaleTemp( ptf->avgLevelPixel, "" );
+		scaleTemp( ptf->maxPixel,      "" );
+		scaleTemp( ptf->avg1Pixel,     "" );
+		scaleTemp( ptf->avg2Pixel,     "" );
+		scaleTemp( ptf->avg3Pixel,     "" );
+		scaleTemp( ptf->avg4Pixel,     "" );
 
 		calcTempDisplayLocations( ptf->minPixel );
 		calcTempDisplayLocations( ptf->avgLevelPixel );
@@ -2014,10 +2177,10 @@ void processThermalFrame( ProcessedThermalFrame *ptf, Mat *thermalFrame ) {
 		calcTempDisplayLocations( ptf->avg4Pixel );
 	}
 
-	ASSERT(( ptf->min.celsius <= ptf->ch.celsius ));
-	ASSERT(( ptf->min.celsius <= ptf->avg.celsius ));
-	ASSERT(( ptf->avg.celsius <= ptf->max.celsius ));
-	ASSERT(( ptf->ch.celsius  <= ptf->max.celsius ));
+	ASSERT(( ptf->min.celsius <= ptf->ch.celsius  ))
+	ASSERT(( ptf->min.celsius <= ptf->avg.celsius ))
+	ASSERT(( ptf->avg.celsius <= ptf->max.celsius ))
+	ASSERT(( ptf->ch.celsius  <= ptf->max.celsius ))
 }
 
 void reColormap(int value) {
@@ -2312,9 +2475,9 @@ void writeRawFrame(Mat &frame, FILE *fp) {
         unsigned short *data = &((unsigned short *)(frame.datastart))[0];
 
 	// Make sure this is NOT a scaled/composited frame
-	ASSERT(( (FIXED_TC_HEIGHT * 2) == rows )); // 2 frames
-	ASSERT((  FIXED_TC_WIDTH       == cols ));
-	ASSERT((                     2 == chan ));
+	ASSERT(( (FIXED_TC_HEIGHT * 2) == rows ))  // 2 frames
+	ASSERT((  FIXED_TC_WIDTH       == cols ))
+	ASSERT((                     2 == chan ))
 
 	// Write header
 	fwrite( &rows,    sizeof(unsigned short), 1, fp );
@@ -2356,9 +2519,9 @@ void readRawFrame(Mat &frame, FILE *fp) {
 	fread( &type,    sizeof(unsigned short), 1, fp );
 	fread( &chan,    sizeof(unsigned short), 1, fp );
 
-	ASSERT(( (FIXED_TC_HEIGHT * 2) == rows )); // 2 frames
-	ASSERT((  FIXED_TC_WIDTH       == cols ));
-	ASSERT((                     2 == chan ));
+	ASSERT(( (FIXED_TC_HEIGHT * 2) == rows ))  // 2 frames
+	ASSERT((  FIXED_TC_WIDTH       == cols ))
+	ASSERT((                     2 == chan ))
 
 	frame.create(rows, cols, type); // Reconfigure frame
 
@@ -2386,7 +2549,7 @@ FILE * readRawFrame(Mat &frame, const char *filename, FILE *fp, int keepOpen, lo
 	// printf("File %s is %ld?=%ld bytes, %ld frames\n", filename, st.st_size, FRAME_SIZE, st.st_size/FRAME_SIZE);
 
 	// Verify raw file is multiples of FRAME_SIZE
-	ASSERT( ((st.st_size % FRAME_SIZE) == 0) );
+	ASSERT( ((st.st_size % FRAME_SIZE) == 0) )
 
 	if ( (st.st_size % FRAME_SIZE) != 0 ) {
 		printf("%s is invalid file size %ld, remainder %ld\n", filename, st.st_size, st.st_size % FRAME_SIZE);
@@ -2414,7 +2577,8 @@ FILE * readRawFrame(Mat &frame, const char *filename, FILE *fp, int keepOpen, lo
 	return fp;
 }
 
-void snapshot( Mat *frame ) {
+
+void snapshot( Mat *frame, const char *prefix ) {
 
 	//size_t strftime (char* ptr, size_t maxsize, const char* format, const struct tm* timeptr );
 	time_t rawtime;
@@ -2429,23 +2593,32 @@ void snapshot( Mat *frame ) {
 	strftime (now, sizeof(now), "%Y%m%d-%H%M%S", timeinfo);
 	strftime (controls.snaptime, sizeof(controls.snaptime), "%H:%M:%S", timeinfo);
 
-	sprintf(filename, "TC001%s.png", now);
-	sprintf(rawname,  "TC001%s.raw", now);
+	if ( validatePrefix( prefix ) ) {
+		sprintf(filename, "%s.png", prefix);
+		sprintf(rawname,  "%s.raw", prefix);
+	} else {
+		sprintf(filename, "TC001%s.png", now);
+		sprintf(rawname,  "TC001%s.raw", now);
+	}
 
+	printf("%s", GREEN_STR() );
 	//now(20231115-010012), filename(TC00120231115-010012.png), snaptime(01:00:12)
-	printf("now(%s), filename(%s), snaptime(%s)\n", now,filename,controls.snaptime);
+	printf("\nnow(%s), filename(%s), snaptime(%s)\n\n", now,filename,controls.snaptime);
+	printf("%s", RESET_STR() );
 
 	imwrite(filename, *frame);
 	writeRawFrame( *threadData.rawFrame, rawname, 0, 0 );
 }
 
-void rotateDisplay( ProcessedThermalFrame *ptf ) {
+void rotateDisplay( ProcessedThermalFrame *ptf, int rotate ) {
 
 	if ( controls.recording ) { recording(ptf, 1); } // Stop active recording
 
 	threadData.configurationChanged++;
 
-	RotateDisplay = (RotateDisplay + 1) % 4;  // Increment rotation by 90 degrees
+	if ( rotate ) {
+		RotateDisplay = (RotateDisplay + 1) % 4;  // Increment rotation by 90 degrees
+	}
 	setHeightWidth();                         // Flip TC_WIDTH and TC_HEIGHT
 	setWindowFormat();                     // Change window width and height
 	resizeWindow(ptf);
@@ -2457,30 +2630,19 @@ void rotateDisplay( ProcessedThermalFrame *ptf ) {
 	rotateUserTemps90();
 }
 
-
-void printKeyBindings() {
-  printf("\n");
-  printf("Version: %s\n", VERSION_STR);
-  printf("\n");
-  printf("%s:\n\tPorted and updated C/C++ app based on Les Wright's 21 June 2023 Python app\n", WINDOW_NAME);
-  printf("\tAll prior licenses apply.\n");
-  printf("\t\thttps://github.com/leswright1977/PyThermalCamera - Python script\n");
-  printf("\t\thttps://github.com/92es/Thermal-Camera-Redux     - Ported/Updated C/C++ app\n");
-  printf("\n");
-  printf("A multi-threaded C/C++ app to read, parse, display thermal data from the Topdon TC001 Thermal camera\n");
-  printf("Rewritten with additional functionality, bug fixes, optimizations and offline post processing\n");
-  printf("Built with display %dx%d, max:default scale %d:%d, rotation %s, default %s, %d colormaps, %s\n", 
-	  DISPLAY_WIDTH, DISPLAY_HEIGHT, MAX_SCALE_STEPS, TC_DEF_SCALE, ROTATION_STR,
-	  USE_CELSIUS?"Celsius":"Fahrenheit", MAX_CMAPS, cmaps[controls.cmapCurrent]->name
-       	);
-  printf("\n");
-  printf("Tested on IvyBridge & Coffee Lake Debian 11 PCs with all features working\n");
-  printf("Tested by Amish Technician on numerous RPi models including RPi Zero 2w, 2, 3, 4 and 5\n");
-  printf("    using 2023-12-05 release of Raspberry Pi OS desktop 64-bit (Debian 12 bookworm)\n");
+void printUsage() {
   printf("\n");
   printf( "Camera Usage: \n\t%s -d n (where 'n' is the number of the desired video camera)\n\n", Argv0 );
   printf( "Offline Usage: \n\t%s -f input.raw (where input.raw is a raw dump file from %s)\n\n", Argv0, Argv0 );
-  printf( "Optional flags: [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-thick n]\n\n");
+  printf( "Optional flags:  [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-thick n]\n");
+#if 0
+  printf( "                 [-help] [-quiet] [-snapshot [prefix]] [-record [prefix]]\n\n");
+#else
+  printf( "                 [-help] [-quiet] [-snapshot [prefix]]\n\n");
+#endif
+}
+
+void printKeyBindings() {
   printf("Key Bindings:\n");
   printf("\n");
   printf("a z: [In|De]crease Blur\n");
@@ -2511,9 +2673,57 @@ void printKeyBindings() {
   printf("   : Right mouse removes user temps and disables ruler mode\n");
   printf("/  : Misc stdout help information\n");
   printf("q  : Quit\n\n");
+  FF();
+}
+
+void printInfo() {
+  printf("\n");
+  printf("Version: %s\n", VERSION_STR);
+  printf("\n");
+  printf("%s:\n\tPorted and updated C/C++ app based on Les Wright's 21 June 2023 Python app\n", WINDOW_NAME);
+  printf("\tAll prior licenses apply.\n");
+  printf("\t\thttps://github.com/leswright1977/PyThermalCamera - Python script\n");
+  printf("\t\thttps://github.com/92es/Thermal-Camera-Redux     - Ported/Updated C/C++ app\n");
+  printf("\n");
+  printf("A multi-threaded C/C++ app to read, parse, display thermal data from the Topdon TC001 Thermal camera (and clones)\n");
+  printf("Rewritten with additional functionality, bug fixes, optimizations and offline post processing\n");
+  printf("Built with display %dx%d, max:default scale %d:%d, rotation %s, default %s, %d colormaps, %s,\n", 
+	  DISPLAY_WIDTH, DISPLAY_HEIGHT, MAX_SCALE_STEPS, TC_DEF_SCALE, ROTATION_STR,
+	  USE_CELSIUS?"Celsius":"Fahrenheit", MAX_CMAPS, cmaps[controls.cmapCurrent]->name
+       	);
+  printf("    %s-threaded with %s scrolling\n",
+
+#if DRAW_SINGLE_THREAD
+		  "Single",
+#else
+		  "Multi",
+#endif
+
+#if NO_DRAG
+		  "jump"
+#elif FAST_DRAG
+		  "fast, reduced resolution drag"
+#else 
+		  "drag"
+#endif
+	);
+
+  printf("\n");
+  printf("Tested on IvyBridge & Coffee Lake Debian 11 PCs with all features working\n");
+  printf("Tested by Amish Technician on numerous RPi models including RPi Zero 2w, 2, 3, 4 and 5\n");
+  printf("    using 2023-12-05 release of Raspberry Pi OS desktop 64-bit (Debian 12 bookworm)\n");
+}
+
+void printVerbose() {
+  printInfo();
+  printUsage();
+  printKeyBindings();
 }
 
 void processKeypress(int c, ProcessedThermalFrame *ptf, Mat *frame ) {
+
+//printf("keyPress(%d)\n", c);
+
 // waitKey(82) // up
 // waitKey(84) // down
 // waitKey(81) // left
@@ -2524,7 +2734,25 @@ void processKeypress(int c, ProcessedThermalFrame *ptf, Mat *frame ) {
 // waitKey(-104) keypad right
 // waitKey(-99) keypad 5 (center)
 
-//printf("keyPress(%d)\n", c);
+	if ( c < 0 ) {
+		switch ( c ) {
+			case -105: // keypad up
+			case -103: // keypad down
+			case -106: // keypad left
+			case -104: // keypad right
+			case -99:  // keypad 5 (center)
+//			case 81:
+// 			case 82: // Same as 'R' ???
+//			case 83:
+//			case 84:
+				if ( rulersOn )	rulers(ptf, rulersX, rulersY, c);
+				break;
+			default: 
+				break;
+		}
+
+		return;
+	}
 
 	switch ( c ) {
 		case 'a': reRad( 1); break; // Blur
@@ -2589,10 +2817,7 @@ void processKeypress(int c, ProcessedThermalFrame *ptf, Mat *frame ) {
 			  }
 			  break;    // Reset Defaults
 
-		case 'p': snapshot(frame); break;  // Snapshot
-
-// Need internal camera control to lock camera from rescaling
-//		case 'l': unlockColormapRange(1); break;
+		case 'p': snapshot(frame, 0x00); break;  // Snapshot
 
 		case 'o': // Cycle [1 - (MAX_MOD-1)], not [0 - (MAX_MOD-1)]
 			  threadData.configurationChanged++;
@@ -2607,21 +2832,10 @@ void processKeypress(int c, ProcessedThermalFrame *ptf, Mat *frame ) {
 			  break;
 
 		case '/':
-		case '?': system("v4l2-ctl --all\n");
-		  	  printf("\n");
-		 	  system("v4l2-ctl --list-devices\n");
+		case '?': if ( ! quietStdout ) { 
+				dumpV4L2();
+			  }
 		  	  printKeyBindings();
-			  break;
-		case -105: // keypad up
-		case -103: // keypad down
-		case -106: // keypad left
-		case -104: // keypad right
-		case -99:  // keypad 5 (center)
-//		case 81:
-// 		case 82: // Same as 'R' ???
-//		case 83:
-//		case 84:
-			  if (rulersOn)	rulers(ptf, rulersX, rulersY, c);
 			  break;
 
 		case '1': 
@@ -2642,7 +2856,7 @@ void processKeypress(int c, ProcessedThermalFrame *ptf, Mat *frame ) {
 		case '8': 
 			  controls.lastHelpScale = -1; // trigger Help to be redrawn
 			  threadData.configurationChanged++;
-			  rotateDisplay(ptf);
+			  rotateDisplay(ptf, 1);
 			  // Rotate rulers around current rotated anchors
 			  if ( rulersOn ) {
 				rulers(ptf, rulersX, rulersY, 0); 
@@ -2713,7 +2927,7 @@ void dumpFrameInfo(Mat *frame) {
 	    frame->type(),
 	    frame->depth()
 	    );
-    fflush(stdout); fflush(stderr);
+    FF();
 #endif
 }
 #endif
@@ -2866,22 +3080,16 @@ void drawCmapScale( Mat &cmapScale, int roiJumpWidth ) {
 		// Calculate linear offset (row, column)
 	        usRowPtr = &(datastart)[ (i * roiJumpWidth) ];
 
-#if 0
-		for ( int j = 0; j < ColorScaleWidth; j++ ) {
-			usRowPtr[ j ] = rowPixel;
-		}
-#else
 		// ColorScaleWidth = 3 + scale => minimum 4 to maximum (3 + maxScale)
-		usRowPtr[ 0 ] = rowPixel;
-		usRowPtr[ 1 ] = rowPixel;
-		usRowPtr[ 2 ] = rowPixel;
-		usRowPtr[ 3 ] = rowPixel;
+		usRowPtr[ 0 ] = rowPixel; // Partial loop unroll
+		usRowPtr[ 1 ] = rowPixel; // Partial loop unroll
+		usRowPtr[ 2 ] = rowPixel; // Partial loop unroll
+		usRowPtr[ 3 ] = rowPixel; // Partial loop unroll
 
 		// Handle remainder
 		for ( int j = 4; j < ColorScaleWidth; j++ ) {
 			usRowPtr[ j ] = rowPixel;
 		}
-#endif
 	}
 
 	cvtColor(cmapScale, cmapScale, COLOR_YUV2BGR_YUYV, CVT_CHAN_FLAG);  // Same as video frame
@@ -3050,6 +3258,115 @@ void drawHUD(ProcessedThermalFrame *ptf, Mat &rgbHUD, const char *src, Scalar sr
 static	Point m3, m4;      // Eliminate automatic variable overhead
 static	Point h_p3, h_p4;  // Eliminate automatic variable overhead
 static	Point v_p3, v_p4;  // Eliminate automatic variable overhead
+
+
+#if DRAW_SINGLE_THREAD
+
+void drawRulerPlot( Mat &frame, Point *sf1, Point *sf2, Scalar **scalar, int max, int horizCaller ) {
+	if ( horizCaller ) return;
+
+//	int64_t t1 = currentTimeNanos();
+
+	// renderDataThread() and drawMinMaxRulerLines() can't display these without a
+	// rare flicker race condition with the parallel plot graph lines
+	// Draw horizontal black temp reference lines
+	if ( Rulers_Both_Horiz )
+	{
+		// Draw 2 black lines with void in middle for the colored cross hair 
+		LINE2( frame, hBase_src, hBase_b,   h_p3, h_p4, RULER_BASELINE_COLOR, 1, sX, sY ); // horizontal reference line
+		LINE2( frame, hBase_c,   hBase_dst, h_p3, h_p4, RULER_BASELINE_COLOR, 1, sX, sY ); // horizontal reference line
+	} 
+	// Draw vertical black temp reference lines
+	if ( Rulers_Both_Vert )
+	{
+		// Draw 2 black lines with void in middle for the colored cross hair 
+		LINE2( frame, vBase_src, vBase_b,   v_p3, v_p4, RULER_BASELINE_COLOR, 1, sX, sY ); // vertical reference line
+		LINE2( frame, vBase_c,   vBase_dst, v_p3, v_p4, RULER_BASELINE_COLOR, 1, sX, sY ); // vertical reference line
+	}
+
+	// draw HORIZ MIN/MAX under VERT MIN/MAX
+	// XXXX_Min_Bound controls MAX_RULER_THICKNESS flickering over Min/Max lines
+	if ( drawHorizMin ) {
+		LINE2( frame, hMin_src, hMin_dst, m3, m4, RULER_MIN_COLOR, 1, sX, sY ); // horizontal reference line
+	}
+	if ( drawHorizMax ) {
+		LINE2( frame, hMax_src, hMax_dst, m3, m4, RULER_MAX_COLOR, 1, sX, sY ); // horizontal reference line
+	}
+
+	// draw VERT MIN/MAX over HORIZ MIN/MAX
+	// XXXX_Min_Bound controls MAX_RULER_THICKNESS flickering over Min/Max lines
+	if ( drawVertMin ) {
+		LINE2( frame, vMin_src, vMin_dst, m3, m4, RULER_MIN_COLOR, 1, sX, sY ); // vertical reference line
+	}
+	if ( drawVertMax ) {
+		LINE2( frame, vMax_src, vMax_dst, m3, m4, RULER_MAX_COLOR, 1, sX, sY ); // vertical reference line
+	}
+
+#if FAST_DRAG // Low resolution drag for low power hardware
+	if ( ! Rulers_And_Drag )  // No Perp Arrows during FAST_DRAG
+#endif
+	{	
+		// Draw All Perps
+		if ( Rulers_Both_Horiz ) {
+			// Draw perpendicular vertical cross hair line on single horizontal ruler
+			ARROW_LINE2( frame, vPerp, rulerX0Points[ rulersX ], m3, m4, *vScalar, 1, sX, sY, arrowScaleV );
+		}
+		if ( Rulers_Both_Vert ) {
+			// Draw perpendicular horizontal cross hair line on single vertical ruler
+			ARROW_LINE2( frame, hPerp, rulerY0Points[ rulersY ], m3, m4, *hScalar, 1, sX, sY, arrowScaleH);
+		}
+	}	
+
+	// Simulate being called with both horizontal and vertical points
+	// void drawRulerPlot( Mat &frame, Point *sf1, Point *sf2, Scalar **scalar, int max, int horizCaller ) 
+	// 				rulerY0Points, rulerY1Points, scalarY, TC_HEIGHT, 0
+	// 				rulerX0Points, rulerX1Points, scalarX, TC_WIDTH,  1
+
+	for ( horizCaller = 0; horizCaller < 2; horizCaller++ ) {
+
+		if        (   horizCaller && Rulers_Both_Horiz ) {
+			sf1    = rulerX0Points;
+			sf2    = rulerX1Points;
+			scalar = scalarX;
+			max    = TC_WIDTH;
+		} else if ( ! horizCaller && Rulers_Both_Vert  ) {
+			sf1    = rulerY0Points;
+			sf2    = rulerY1Points;
+			scalar = scalarY;
+			max    = TC_HEIGHT;
+		} else {
+			continue;
+		}
+
+
+#if FAST_DRAG // Low resolution drag for low power hardware
+		int dragInc = Rulers_And_Drag ? FAST_DRAG_N : 1;
+		int startI  = dragInc / 2; // Center lower resolution plot
+#else
+		#define dragInc 1
+		#define startI  0
+#endif
+
+		int minusOneMax = max - dragInc; // Compenstate for loop accessing [i + dragInc]
+
+		// Fomerly LINE3() ...
+		if ( controls.wD ) { // Take if out of loop body
+			for ( int i = startI; i < minusOneMax; i += dragInc ) {
+				line( frame, sf1[i], sf1[i + dragInc], *scalar[i], 1 );
+				line( frame, sf2[i], sf2[i + dragInc], *scalar[i], 1 );
+			}
+		} else {
+			for ( int i = startI; i < minusOneMax; i += dragInc ) {
+				line( frame, sf1[i], sf1[i + dragInc], *scalar[i], 1 );
+			}
+		}
+	}
+
+//	printf("\t%s(%d) %ld nanos\n", __func__, __LINE__, (currentTimeNanos() - t1)); FF();
+}
+
+#else
+
 void drawRulerPlot( Mat &frame, Point *sf1, Point *sf2, Scalar **scalar, int max, int horizCaller ) {
 //	int64_t t1 = currentTimeNanos();
 
@@ -3081,43 +3398,39 @@ void drawRulerPlot( Mat &frame, Point *sf1, Point *sf2, Scalar **scalar, int max
 
 
 	if ( horizCaller ) {
-		// draw all MIN_COLOR before MAX_COLOR
-		if ( Rulers_Both_Horiz ) {
-			// XXXX_Min_Bound controls MAX_RULER_THICKNESS flickering over Min/Max lines
-			if ( minBound && Horiz_Min_Bound ) {
-				LINE2( frame, hMin_src, hMin_dst, m3, m4, RULER_MIN_COLOR, 1, sX, sY ); // horizontal reference line
-			}
-
+		// draw HORIZ MIN/MAX under VERT MIN/MAX
+		// XXXX_Min_Bound controls MAX_RULER_THICKNESS flickering over Min/Max lines
+		if ( drawHorizMin ) {
+			LINE2( frame, hMin_src, hMin_dst, m3, m4, RULER_MIN_COLOR, 1, sX, sY ); // horizontal reference line
 		}
-		if ( Rulers_Both_Vert ) {
-			// XXXX_Min_Bound controls MAX_RULER_THICKNESS flickering over Min/Max lines
-			if ( minBound && Vert_Min_Bound ) {
-				LINE2( frame, vMin_src, vMin_dst, m3, m4, RULER_MIN_COLOR, 1, sX, sY ); // vertical reference line
-			}
+		if ( drawHorizMax ) {
+			LINE2( frame, hMax_src, hMax_dst, m3, m4, RULER_MAX_COLOR, 1, sX, sY ); // horizontal reference line
 		}
 
-		// draw all MAX_COLOR after MIN_COLOR
-		if ( Rulers_Both_Horiz ) {
-			if ( maxBound && Horiz_Max_Bound ) {
-				LINE2( frame, hMax_src, hMax_dst, m3, m4, RULER_MAX_COLOR, 1, sX, sY ); // horizontal reference line
-			}
+		// draw VERT MIN/MAX over HORIZ MIN/MAX
+		// XXXX_Min_Bound controls MAX_RULER_THICKNESS flickering over Min/Max lines
+		if ( drawVertMin ) {
+			LINE2( frame, vMin_src, vMin_dst, m3, m4, RULER_MIN_COLOR, 1, sX, sY ); // vertical reference line
 		}
-		if ( Rulers_Both_Vert ) {
-			if ( maxBound && Vert_Max_Bound ) {
-				LINE2( frame, vMax_src, vMax_dst, m3, m4, RULER_MAX_COLOR, 1, sX, sY ); // vertical reference line
-			}
+		if ( drawVertMax ) {
+			LINE2( frame, vMax_src, vMax_dst, m3, m4, RULER_MAX_COLOR, 1, sX, sY ); // vertical reference line
 		}
 
 	} else {
-		// Draw All Perps
-		if ( Rulers_Both_Horiz ) {
-			// Draw perpendicular vertical cross hair line on single horizontal ruler
-			ARROW_LINE2( frame, vPerp, rulerX0Points[ rulersX ], m3, m4, *vScalar, 1, sX, sY, arrowScaleV );
-		}
-		if ( Rulers_Both_Vert ) {
-			// Draw perpendicular horizontal cross hair line on single vertical ruler
-			ARROW_LINE2( frame, hPerp, rulerY0Points[ rulersY ], m3, m4, *hScalar, 1, sX, sY, arrowScaleH);
-		}
+#if FAST_DRAG // Low resolution drag for low power hardware
+		if ( ! Rulers_And_Drag )  // No Perp Arrows during FAST_DRAG
+#endif
+		{	
+			// Draw All Perps
+			if ( Rulers_Both_Horiz ) {
+				// Draw perpendicular vertical cross hair line on single horizontal ruler
+				ARROW_LINE2( frame, vPerp, rulerX0Points[ rulersX ], m3, m4, *vScalar, 1, sX, sY, arrowScaleV );
+			}
+			if ( Rulers_Both_Vert ) {
+				// Draw perpendicular horizontal cross hair line on single vertical ruler
+				ARROW_LINE2( frame, hPerp, rulerY0Points[ rulersY ], m3, m4, *hScalar, 1, sX, sY, arrowScaleH);
+			}
+		}	
 	}
 
 
@@ -3127,20 +3440,29 @@ void drawRulerPlot( Mat &frame, Point *sf1, Point *sf2, Scalar **scalar, int max
 		incAndWait( &BothPlotMutex, &myState, (BothPlotState + 1) % ARRAY_COUNT(BothPlotStates) );
 	}
 
-	int minusOneMax = max - 1; // Compenstate for loop accessing [i + 1]
 
 	if (   (horizCaller && Rulers_Both_Horiz) ||
 	     (! horizCaller && Rulers_Both_Vert)  ) {
 
+#if FAST_DRAG // Low resolution drag for low power hardware
+		int dragInc = Rulers_And_Drag ? FAST_DRAG_N : 1;
+		int startI  = dragInc / 2; // Center lower resolution plot
+#else
+		#define dragInc 1
+		#define startI  0
+#endif
+
+		int minusOneMax = max - dragInc; // Compenstate for loop accessing [i + dragInc]
+
 		// Fomerly LINE3() ...
 		if ( controls.wD ) { // Take if out of loop body
-			for ( int i = 0; i < minusOneMax; i++ ) {
-				line( frame, sf1[i], sf1[i + 1], *scalar[i], 1 );
-				line( frame, sf2[i], sf2[i + 1], *scalar[i], 1 );
+			for ( int i = startI; i < minusOneMax; i += dragInc ) {
+				line( frame, sf1[i], sf1[i + dragInc], *scalar[i], 1 );
+				line( frame, sf2[i], sf2[i + dragInc], *scalar[i], 1 );
 			}
 		} else {
-			for ( int i = 0; i < minusOneMax; i++ ) {
-				line( frame, sf1[i], sf1[i + 1], *scalar[i], 1 );
+			for ( int i = startI; i < minusOneMax; i += dragInc ) {
+				line( frame, sf1[i], sf1[i + dragInc], *scalar[i], 1 );
 			}
 		}
 	}
@@ -3153,16 +3475,114 @@ void drawRulerPlot( Mat &frame, Point *sf1, Point *sf2, Scalar **scalar, int max
 
 	BothPlotState = BothPlotMutex.blockingState; // Set for next stage
 
-//	printf("\t%s(%d) %ld nanos\n", __func__, __LINE__, (currentTimeNanos() - t1)); fflush(stdout); fflush(stderr);
+//	printf("\t%s(%d) %ld nanos\n", __func__, __LINE__, (currentTimeNanos() - t1)); FF();
 }
 
+#endif
+
+
+// Benchmarks:
+//	NO_HALO is [13-14]X faster than HALO (with anti-aliasing)
+//	NO_HALO is [8-9]X   faster than HALO (with anti-aliasing hybrid mod)
+//	                    HALO was sped up by hybrid mod
+//	SIMPLEX is [3]X     faster than TRIPLEX
+//	TRIPLEX (14X / 3X) is still [4.6]X faster than original SIMPLEX
 
 // Optimization: When dragging rulers, don't draw text and marker halos
 // Calls drawTempMarker() or drawTempMarkerNoHalo() via function pointer
 // Eliminate array dereferencing by using Temperature pointers
+
 #undef  DO_USER
 #define DO_USER(n)   if ( user_##n->active ) { drawTempMarkerPtr( frame, *user_##n, GREEN ); } 
 
+#if DRAW_SINGLE_THREAD
+
+void drawOneThirdOfTheTemps() {
+	// empty dummy 
+}
+
+void drawUserAndRulerTemps( int horizontal ) {
+
+	if ( horizontal ) return;
+
+	ProcessedThermalFrame *ptf = threadData.ptf;
+	Mat frame                  = *threadData.rgbFrame;
+	Rect roi;
+
+	if ( RULERS_OFF == rulersOn ) {
+		// Only draw once, not for both horizontal and vertical calls
+		// Draw crosshair and label over first frame
+		drawTempMarker( frame, ptf->ch, BLACK );
+	}
+
+	DO_ALL()
+
+	drawTempMarker( frame, ptf->maxPixel,  WHITE );
+	drawTempMarker( frame, ptf->avg1Pixel, WHITE );
+	drawTempMarker( frame, ptf->avg2Pixel, WHITE );
+	drawTempMarker( frame, ptf->avg3Pixel, WHITE );
+	drawTempMarker( frame, ptf->avg4Pixel, WHITE );
+	drawTempMarker( frame, ptf->minPixel,  WHITE );
+
+	// Draw "-" average temp indicator on colormap gradient scale
+	drawTempMarker( frame, ptf->avgLevelPixel, RULER_MID_COLOR );
+
+	// Draw ">" crosshair temp indicator on colormap gradient scale
+	float kTmp = ptf->chLevelPixel.kelvin;
+
+	drawTempMarker( frame, ptf->chLevelPixel,
+			((kTmp < minusThresholdKelvin) ? RULER_MIN_COLOR :
+			 (kTmp > plusThresholdKelvin)  ? RULER_MAX_COLOR : RULER_MID_COLOR) );
+
+	if ( drawMax ) { drawTempMarker( *threadData.rgbFrame, ptf->max, RED ); }
+	if ( drawMin ) { drawTempMarker( *threadData.rgbFrame, ptf->min, BLUE ); }
+
+		try {
+			// Display either OSD Help or HUD, not both
+			if ( HUD_HELP == controls.hud ) {
+				roi.x = roi.y = 0;
+				// NOTE: Help is taller than 1X scale PORTRAIT Help
+				roi.width    = min( HelpWidth,  SCALED_TC_WIDTH  );
+				roi.height   = min( HelpHeight, SCALED_TC_HEIGHT );
+				Mat frameROI = frame( roi ); // Grab pointer to section of image under HUD
+
+				addWeighted( frameROI, 1-HUD_ALPHA, threadData.rgbHUD, HUD_ALPHA, 0.0, frameROI );
+
+			} else if ( HUD_HUD == controls.hud ) {
+				// Make HUD translucent
+				// Alpha blended HUD is CPU intensive, use smallest rectangle possible
+				roi.x = roi.y = 0;
+				roi.width    = min( HudWidth,  SCALED_TC_WIDTH  );
+				roi.height   = min( HudHeight, SCALED_TC_HEIGHT );
+				Mat frameROI = frame( roi ); // Grab pointer to section of image under HUD
+
+				// Alpha blend with HUD
+				// Copy blended result back to same section of output frame
+				addWeighted( frameROI, 1-HUD_ALPHA, threadData.rgbHUD, HUD_ALPHA, 0.0, frameROI );
+			}
+		} catch (...) {
+			controls.lastHelpScale = -1; // trigger Help to be redrawn
+			printf("%s(%d) - HUD exception (%d)\n", __func__, __LINE__, horizontal); 
+			FF();
+		}
+
+	//	try {
+			{ // Draw opaque Colormap Gradient Scale
+				// Reversed from Mat cmapScale(width,height)
+				roi.x      = (controls.scaledSFWidth - ColorScaleWidth);
+				roi.y      = 0;
+				roi.width  = ColorScaleWidth;
+				roi.height = controls.scaledSFHeight; 
+
+				threadData.cmapScale.copyTo( frame( roi ) );  // MUST BE SAME PIXEL FORAMT !!!
+			}
+	//	} catch (...) {
+	//		printf("%s(%d) - cmapScale exception\n", __func__, __LINE__); 
+	//		FF();
+	//	}
+}
+
+#else
 
 // Called only once per frame
 void drawOneThirdOfTheTemps() {
@@ -3176,37 +3596,7 @@ void drawOneThirdOfTheTemps() {
 		incAndWait( &B4TempPlotMutex, &myState, B4TempPlotState );
 	}
 
-#if 0
-{
-	// NO_HALO is [13-14]X faster
-	// SIMPLEX is 3X faster than TRIPLEX
-	Default_Font = cv::FONT_HERSHEY_SIMPLEX; // Normal size sans-serif font
-	#define MAX_TEST 100
-	int64_t t1,t2,t3;
-	for (int j = 0; j < 2; j++) {
-		t1 = currentTimeMillis();
-		drawTempMarkerPtr = &drawTempMarker;
-		for (int i = 0; i < MAX_TEST; i++) { 
-			DO_ALL()
-		}
-		t2 = currentTimeMillis(); 
-		drawTempMarkerPtr = &drawTempMarkerNoHalo;
-		for (int i = 0; i < MAX_TEST; i++) { 
-			DO_ALL()
-		}
-		t3 = currentTimeMillis();
-		int64_t d1 = t2-t1;
-		int64_t d2 = t3-t2;
-		if (0 < d1) {
-			printf("%s: DO_USER(%ld), NO_HALO(%ld) delta(%.3f)\n", 
-			((0==j) ? "SIMPLEX" : "TRIPLEX"), 
-			d1, d2, (double)(0 == d2) ? 0.0 : ((float)d1/(float)d2) );
-		}
-		Default_Font = cv::FONT_HERSHEY_TRIPLEX; // Normal size serif font (more complex than COMPLEX)
-	}
-	printf("\n");
-
-	// These are after removing Anti-Aliasing from halos
+	// These stats are after removing Anti-Aliasing from halos (hybrid mod)
 	// SIMPLEX: DO_USER(27), NO_HALO(3) delta(9.000)
 	// TRIPLEX: DO_USER(81), NO_HALO(10) delta(8.100)
 
@@ -3216,11 +3606,6 @@ void drawOneThirdOfTheTemps() {
 	// SIMPLEX: DO_USER(28), NO_HALO(3) delta(9.333)
 	// TRIPLEX: DO_USER(82), NO_HALO(10) delta(8.200)
 
-	// Restore state
-	drawTempMarkerPtr = &drawTempMarker;
-	Default_Font = cv::FONT_HERSHEY_SIMPLEX;	// Normal size sans-serif font
-}
-#endif
 
 	// Horizontal are [0=5], vertical are [6-11], center is [12]
 	// Users are [0-12]
@@ -3305,6 +3690,8 @@ void drawUserAndRulerTemps( int horizontal ) {
 				((kTmp < minusThresholdKelvin) ? RULER_MIN_COLOR :
 				 (kTmp > plusThresholdKelvin)  ? RULER_MAX_COLOR : RULER_MID_COLOR) );
 
+		if ( drawMin ) { drawTempMarker( *threadData.rgbFrame, ptf->min, BLUE ); }
+
 		try {
 			// Display either OSD Help or HUD, not both
 			if ( HUD_HELP == controls.hud ) {
@@ -3316,7 +3703,7 @@ void drawUserAndRulerTemps( int horizontal ) {
 
 				addWeighted( frameROI, 1-HUD_ALPHA, threadData.rgbHUD, HUD_ALPHA, 0.0, frameROI );
 
-			} else if ( HUD_ON == controls.hud ) {
+			} else if ( HUD_HUD == controls.hud ) {
 				// Make HUD translucent
 				// Alpha blended HUD is CPU intensive, use smallest rectangle possible
 				roi.x = roi.y = 0;
@@ -3331,7 +3718,7 @@ void drawUserAndRulerTemps( int horizontal ) {
 		} catch (...) {
 			controls.lastHelpScale = -1; // trigger Help to be redrawn
 			printf("%s(%d) - HUD exception (%d)\n", __func__, __LINE__, horizontal); 
-			fflush(stdout); fflush(stderr);
+			FF();
 		}
 
 	} else {
@@ -3368,6 +3755,8 @@ void drawUserAndRulerTemps( int horizontal ) {
 		// Draw "-" average temp indicator on colormap gradient scale
 		drawTempMarker( frame, ptf->avgLevelPixel, RULER_MID_COLOR );
 
+		if ( drawMax ) { drawTempMarker( *threadData.rgbFrame, ptf->max, RED ); }
+
 	//	try {
 			{ // Draw opaque Colormap Gradient Scale
 				// Reversed from Mat cmapScale(width,height)
@@ -3380,13 +3769,15 @@ void drawUserAndRulerTemps( int horizontal ) {
 			}
 	//	} catch (...) {
 	//		printf("%s(%d) - cmapScale exception\n", __func__, __LINE__); 
-	//		fflush(stdout); fflush(stderr);
+	//		FF();
 	//	}
 	
 	}
 
 //	printf("horiz(%d) - %s(%d) tenth ms %ld\n", horizontal, __func__, __LINE__, (currentTimeMicros() - t1) / 100 );
 }
+
+#endif
 
 extern void exitAllThreads();
 
@@ -3401,9 +3792,6 @@ void *stdinDataThread( void *ptr ) {
 	ThreadData *td = (ThreadData *)ptr;
 
         int64_t t1 = currentTimeMicros();
-
-	//setvbuf(stdin, NULL, _IONBF, 0); // Set stdin unbuffered
-	//setvbuf(stdin, NULL, _IOFBF, 1); // Set stdin unbuffered
 
 	int stdinCharacter = -1;
 	char buf[256];
@@ -3443,11 +3831,11 @@ void *stdinDataThread( void *ptr ) {
 			if ( feof(stdin) ) {
 				printf("\n\n%s(%d) - %sstdin EOF detected%s - exiting\n", 
 					__func__, __LINE__, RED_STR(), RESET_STR() ); 
-				fflush(stdout); fflush(stderr);
+				FF();
 				break;
 			}
 			printf("a");
-			sleepMillis(100);
+			sleepMillis(10);
 		}
 // Exended ASCII ???
 // keypad arrows ESC(27) + 91 + [65,66,67,68,69]
@@ -3474,25 +3862,31 @@ void *stdinDataThread( void *ptr ) {
 	threadData.running = 0; // Tell all threads to exit
 
 	printf("%s(%d) - %sduration %.3f seconds%s\n\n\n",
-		__func__, __LINE__, GREEN_STR(), seconds, RESET_STR() ); fflush(stdout);
+		__func__, __LINE__, GREEN_STR(), seconds, RESET_STR() ); FF();
 
 	return ptr;
 }
 
-
-#if 1
-#define TS(a) a 
-#else
-#define TS(a) /* compile out (T)iming (S)tat call overhead */
-#endif
-
+static Mat hist[2];
 // Optimization and make thread safe by user passing in pre-allocated hist scratch buffer
-void histogramWrapper( Mat &src, Mat &dst )
+void histogramWrapper( Mat &src, Mat &dst, int who )
 {
-//printf("> %s(%d) %d x %d\n", __func__, __LINE__, src.rows, src.cols ); fflush(stdout); fflush(stderr);
+//printf("> %s(%d) %d x %d\n", __func__, __LINE__, src.rows, src.cols ); FF();
 
-	Mat hist( src.rows, src.cols, CV_8UC1 ); // equalizeHist() only works on 8UC1 matrix
+	// Optimization: Only realloc when absolutely necessary ...
+	// Don't use .size() because it creates/destorys intermediate Size ojbect
+	if (	hist[who].rows != src.rows ||
+		hist[who].cols != src.cols ) {
+		hist[who] = Mat( src.rows, src.cols, CV_8UC1 ); // equalizeHist() only works on 8UC1 matrix
+	}
+#if 0
+	else {
+		printf("Reusing old\n");
+	}
+#endif
 	int max = src.rows * src.cols;
+
+	ASSERT(( max == src.total() ))
 
 	// max 33022 min 32768 delta 254
 
@@ -3507,7 +3901,7 @@ void histogramWrapper( Mat &src, Mat &dst )
 	// *************** BEGIN POINTER LOOP UNROLL VERSION ******************
 	unsigned short *srcPtr  = &((unsigned short *)(src.datastart))[0];
 	unsigned short *maxPtr  = &((unsigned short *)(src.datastart))[max];
-	unsigned char  *histPtr = &( (unsigned char *)(hist.datastart))[0];
+	unsigned char  *histPtr = &( (unsigned char *)(hist[who].datastart))[0];
 	for ( ; srcPtr < maxPtr; srcPtr += 8, histPtr += 8) { // Copy CV_8UC2 into CV_8UC1 to make monochrome
 		* histPtr    = (unsigned char)(* srcPtr    - 32768);
 		*(histPtr+1) = (unsigned char)(*(srcPtr+1) - 32768);
@@ -3520,12 +3914,12 @@ void histogramWrapper( Mat &src, Mat &dst )
 	}
 	// *************** END POINTER LOOP UNROLL VERSION ******************
 
-	equalizeHist( hist, hist ); // Source 8-bit single channel image. 
+	equalizeHist( hist[who], hist[who] ); // Source 8-bit single channel image. 
 
 	// *************** BEGIN POINTER LOOP UNROLL VERSION ******************
 	unsigned short *dstPtr  = &((unsigned short *)(dst.datastart))[0];
 	                maxPtr  = &((unsigned short *)(dst.datastart))[max];
-	                histPtr = &( (unsigned char *)(hist.datastart))[0];
+	                histPtr = &( (unsigned char *)(hist[who].datastart))[0];
 	for ( ; dstPtr < maxPtr; dstPtr += 8, histPtr += 8) { // Copy CV_8UC2 into CV_8UC1 to make monochrome
 		* dstPtr    = (unsigned short)(* histPtr    + 32768);
 		*(dstPtr+1) = (unsigned short)(*(histPtr+1) + 32768);
@@ -3537,9 +3931,11 @@ void histogramWrapper( Mat &src, Mat &dst )
 		*(dstPtr+7) = (unsigned short)(*(histPtr+7) + 32768);
 	}
 	// *************** END POINTER LOOP UNROLL VERSION  ******************
-//printf("< %s(%d) %d x %d\n", __func__, __LINE__, src.rows, src.cols ); fflush(stdout); fflush(stderr);
+//printf("< %s(%d) %d x %d\n", __func__, __LINE__, src.rows, src.cols ); FF();
 }
 
+
+#if ! DRAW_SINGLE_THREAD  /* [ */
 
 void *imageDataThread( void *ptr ) {
 
@@ -3548,7 +3944,7 @@ void *imageDataThread( void *ptr ) {
 	ThreadData *td = (ThreadData *)ptr;
 	ProcessedThermalFrame *ptf = td->ptf;
 
-	Rect subFrameROI = Rect(0, 0, FIXED_TC_WIDTH, FIXED_TC_HEIGHT);
+	Rect imageFrameROI = Rect(0, 0, FIXED_TC_WIDTH, FIXED_TC_HEIGHT);
 
 	TS( int64_t imageMicros; )
 	TS( int64_t tmp; )
@@ -3562,189 +3958,38 @@ void *imageDataThread( void *ptr ) {
 		incAndWait(&WorkerMutex, &td->imageState, 0); /**************** BLOCKING - Tier 0 */
 		if ( ! td->running ) break; // after keypress
 
-		TS( imageMicros = currentTimeMicros(); )
-
-		imageFrame = Mat( *(threadData.rawFrame), subFrameROI ).clone();
-		if ( RotateDisplay ) { rotate( imageFrame, imageFrame, rotateFlags[ RotateDisplay ] ); }
-
-		if ( WINDOW_THERMAL != controls.windowFormat ) {
-			if ( Use_Histogram ) {
-				histogramWrapper( imageFrame, imageFrame );
-			}
-
-			// Convert the composited image copy to RGB
-			// cv::cvtColor (InputArray src, OutputArray dst, int code, int dstCn=0)
-			cvtColor ( imageFrame, rgbImageFrame, COLOR_YUV2BGR_YUYV, CVT_CHAN_FLAG );
-
-			// Set contrast
-			// void cv::convertScaleAbs (InputArray src, OutputArray dst, double alpha=1, double beta=0)
-			// dst(I)=saturate\_cast<uchar>(|src(I)∗alpha+beta|)
-			if ( 1.0 != controls.alpha ) {
-				// Optimization:  Only set alpha/contrast if it is NOT 1.0
-				convertScaleAbs(rgbImageFrame, rgbImageFrame, controls.alpha); // Contrast
-			}
-		}
-
-		ASSERT(( TC_WIDTH  == imageFrame.cols ));
-		ASSERT(( TC_HEIGHT == imageFrame.rows ));
-
-		TS( tmp = currentTimeMicros(); )
-
-		TS( threadData.rotMicros += ( tmp - imageMicros ); ) // track relative benchmarks
-		TS( td->imageMicros      += ( tmp - imageMicros ); ) // track relative benchmarks
+#if 1
+		#include "image_0.cpp"
+#else
+		// read in file
+#endif
 
 		incAndWait(&WorkerMutex, &td->imageState, 1); /**************** BLOCKING - Tier 1 */
 
-		TS( imageMicros = currentTimeMicros(); )
-//printf("\t%s(%d) - Running %ld\n", __func__, __LINE__, currentTimeMicros()); fflush(stdout);
-
-		// Offline and FreezeFrame optimizations 
-		if ( RERENDER_OPTIMIZATION ) {
-
-			// Use image frame and/or thermal frame for RGB rendering, snapshot and recording
-
-			// Make window layout modes from copy
-			switch ( controls.windowFormat ) {
-				case WINDOW_IMAGE:
-					sourcePtr = &rgbImageFrame;
-					break;
-				case WINDOW_THERMAL:
-					sourcePtr = &rgbThermalFrame;
-					break;
-				case WINDOW_DOUBLE_WIDE:
-					cv::hconcat( rgbImageFrame, rgbThermalFrame, source );
-					sourcePtr = &source;
-					break;
-				case WINDOW_DOUBLE_HIGH:
-				default:
-					cv::vconcat( rgbImageFrame, rgbThermalFrame, source );
-					sourcePtr = &source;
-					break;
-			}
-
-			/************************************************************************************
-			 * At this point we may have WINDOW_DOUBLE modes implying a larger matrix 
-			 * along with the subsequent call to resize makes it less desirable to push more 
-			 * image processing back into tier 0.
-			 * Doing so would increase more pixel processing in subsequent calls
-			************************************************************************************/
-
-			// User selected interpolation incuding bicubic, upscale
-			// /usr/include/opencv4/opencv2/imgproc.hpp
-			// void cv::resize(cv::InputArray, cv::OutputArray, cv::Size, double, double, int)
-		
-			SIZE( size, controls.sW, controls.sH );
-			resize(*sourcePtr, *td->rgbFrameOrig, size,
-				     0.0, 0.0, // optional 0.0, 0.0 args is REQUIRED for Interpolation options to work
-				     Inters[controls.inters].inter // INTER_CUBIC default
-				); // Scale up from native camera resolution
-
-			// /usr/include/opencv4/opencv2/imgproc.hpp
-			// void cv::blur(cv::InputArray, cv::OutputArray, cv::Size, cv::Point, int)
-
-			if ( controls.rad > 0 ) { // Optionally Blur to smooth scaling pixelization and diagonal jaggies
-				POINT( point, controls.rad, controls.rad );
-
-				blur( *td->rgbFrameOrig, *td->rgbFrameOrig, point );
-			}
-
-			//  Colormaps do not support ALPHA/TRANSPARENTCIES
-			//  what():  OpenCV(4.5.1) ../modules/imgproc/src/colormap.cpp:736: error: (-5:Bad argument) 
-			//  cv::ColorMap only supports source images of type CV_8UC1 or CV_8UC3 in function 'operator()'
-
-			applyMyColorMap( *td->rgbFrameOrig, *td->rgbFrameOrig, controls.cmapCurrent );
-		}
-
-#if USE_CLONE
-		*td->rgbFrame = td->rgbFrameOrig->clone();
+#if 1
+		#include "image_1.cpp"
 #else
-		td->rgbFrameOrig->copyTo( *td->rgbFrame );
+		// read in file
 #endif
-
-		TS( td->imageMicros += ( currentTimeMicros() - imageMicros ); ) // track relative benchmarks
       		incAndWait(&WorkerMutex, &td->imageState, 2); /**************** BLOCKING - Tier 2 */
 
-		TS( imageMicros = currentTimeMicros(); )
-
-		// Do not display graphics over video
-		if ( controls.hud != HUD_NO_DRAWINGS )
-		{
-			if ( Rulers_Both_Horiz_Vert ) 
-			{
-		//		try {
-					drawRulerPlot( *threadData.rgbFrame, 
-						rulerY0Points, rulerY1Points, scalarY, TC_HEIGHT, 0 );
-		//		} catch (...) {
-		//			printf("\t%s(%d) - drawRulers exception\n", __func__, __LINE__);
-		//			fflush(stdout); fflush(stderr);
-		//		}
-			}
-		//	try {
-				drawUserAndRulerTemps( 0 );
-		//	} catch (...) {
-		//		printf("\t%s(%d) - drawUserAndRulerTemps exception\n", __func__, __LINE__);
-		//		fflush(stdout); fflush(stderr);
-		//	}
-		}
-
-		if ( controls.hud != HUD_NO_DRAWINGS ) {
-	//		try {
-				// Display floating min temp (while keeping text visible @ display boundaries)
-				if ( drawMin ) {
-					drawTempMarker( *threadData.rgbFrame, ptf->min, BLUE );
-				}
-	//		} catch (...) {
-	//		}
-		}
-
-		TS( td->imageMicros += ( currentTimeMicros() - imageMicros ); ) // track relative benchmarks
-
-//printf("\t%s(%d) - Halted %ld\n", __func__, __LINE__, currentTimeMicros()); fflush(stdout);
+#if 1
+		#include "image_2.cpp"
+#else
+		// read in file
+#endif
 
 		incAndWait(&WorkerMutex, &td->imageState, 3); /**************** BLOCKING - Tier 3 */
 
-		TS( imageMicros = currentTimeMicros(); )
-
-		// Active Recording doesn't handle scale/resize/rotate changes, so ...
-		// the active recording gets stopped when these configuration changes happen.
-		if ( controls.recording ) {
-			try {
-				time_t now          = time(NULL);
-				time_t delta        = now - controls.recordStartTime;
-				struct tm *timeinfo = gmtime (&delta);
-
-				strftime (controls.elapsed, sizeof(controls.elapsed), "%H:%M:%S", timeinfo);
-
-				pthread_mutex_lock( &videoOutMutex );
-					// Protect videoOut and recordingActive
-					if ( controls.recordingActive ) {
-						ptf->videoOut.write( *threadData.rgbFrame );
-					}
-				pthread_mutex_unlock( &videoOutMutex );
-
-				controls.recFrameCounter++;
-
-				if ( 0 == (controls.recFrameCounter % 6) ) {
-// TODO - FIXME - This increment maybe a race condition with the main threads clearing to 0x00
-					// Signal HUD to update at least 4X / second to update elapsed timer
-					threadData.configurationChanged++; 
-				}
-
-				// Raw video file grows very quickly, maybe drop a few frames ???
-#if 0 // Disabling this feature until streaming compression is added
-				if ((controls.recFrameCounter % 10) == 0) {
-					rawRecFp = writeRawFrame( rawFrame, rawRecFilename, rawRecFp, 1 );
-				}
+#if 1
+		#include "image_3.cpp"
+#else
+		// read in file
 #endif
-			} catch (...) {
-			}
-		}
-
-		TS( td->imageMicros += ( currentTimeMicros() - imageMicros ); ) // track relative benchmarks
 
 	}  // end while(1)
 
-	printf("%s(%d) - exiting\n", __func__, __LINE__); fflush(stdout);
+	printf("%s(%d) - exiting\n", __func__, __LINE__); FF();
 
 	exitAllThreads();
 
@@ -3761,412 +4006,68 @@ void *thermalDataThread( void *ptr ) {
 
 	ThreadData *td = (ThreadData *)ptr;
 	ProcessedThermalFrame *ptf = td->ptf;
-	Rect roi;
-	roi.x = roi.y = 0; // x and y are always ZERO
+	Rect thermROI;
+	thermROI.x = thermROI.y = 0; // x and y are always ZERO
 
 	// Reuse scratch memory without having to copy
 
-	Rect subFrameROI = Rect(0, FIXED_TC_HEIGHT, FIXED_TC_WIDTH, FIXED_TC_HEIGHT);
+	Rect thermFrameROI = Rect(0, FIXED_TC_HEIGHT, FIXED_TC_WIDTH, FIXED_TC_HEIGHT);
 
        	TS( int64_t thermMicros; )
 
 	Mat *thermalFramePtr; // Parallel Histogram processing
 	Mat  copy;
 
-	int lastX = -1, lastY = -1;
-
 	while ( td->running ) 
 	{
 		incAndWait(&WorkerMutex, &td->thermalState, 0); /**************** BLOCKING - Tier 0 */
 		if ( ! td->running ) break; // after keypress
 
-        	TS( thermMicros = currentTimeMicros(); )
-
-		thermalFrame = Mat( *(threadData.rawFrame), subFrameROI ).clone();
-		if ( RotateDisplay ) { rotate( thermalFrame, thermalFrame, rotateFlags[ RotateDisplay ] ); }
-
-		if ( WINDOW_IMAGE != controls.windowFormat ) {
-			if ( Use_Histogram ) {
-				// Apply historgram to copy, not original
-				// Changing thermalFrame will break subsequent call to processThermalFrame()
-#if USE_CLONE
-				copy = thermalFrame.clone();
+#if 1
+		#include "therm_0.cpp"
 #else
-				thermalFrame.copyTo( copy );
+		// read in file
 #endif
-				histogramWrapper( thermalFrame, copy );
-				thermalFramePtr = &copy;
-			} else {
-				thermalFramePtr = &thermalFrame;
-			}
-
-			// Convert the composited image copy to RGB
-			// cv::cvtColor (InputArray src, OutputArray dst, int code, int dstCn=0)
-			cvtColor ( *thermalFramePtr, rgbThermalFrame, COLOR_YUV2BGR_YUYV, CVT_CHAN_FLAG );
-
-			// Set contrast
-			// void cv::convertScaleAbs (InputArray src, OutputArray dst, double alpha=1, double beta=0)
-			// dst(I)=saturate\_cast<uchar>(|src(I)∗alpha+beta|)
-			if ( 1.0 != controls.alpha ) {
-				// Optimization:  Only set alpha/contrast if it is NOT 1.0
-				convertScaleAbs(rgbThermalFrame, rgbThermalFrame, controls.alpha); // Contrast
-			}
-		}
-
-		ASSERT(( TC_WIDTH  == thermalFrame.cols ));
-		ASSERT(( TC_HEIGHT == thermalFrame.rows ));
-
-		TS( td->thermMicros += ( currentTimeMicros() - thermMicros ); ) // track relative benchmarks
 
 		incAndWait(&WorkerMutex, &td->thermalState, 1); /**************** BLOCKING - Tier 1 */
 
-        	TS( thermMicros = currentTimeMicros(); )
-
-	//	try {
-			processThermalFrame( ptf, &thermalFrame );
-	//	} catch (...) {
-	//		printf("\t%s(%d) - processThermalFrame exception\n", __func__, __LINE__);
-	//		fflush(stdout); fflush(stderr);
-	//	}
-
-		if ( controls.hud != HUD_NO_DRAWINGS )
-		{
-			// HAS TO BE DONE AFTER Min/Max/Avg has been calculated !!!
-			// THREAD LOAD BALANCING - Grab ruler row and column temps and points in parallel
-
-			minF       = ptf->minPixel.celsius;
-			maxF       = ptf->maxPixel.celsius;
-			avgF       = ptf->avg.celsius;
-
-			// BOUND_RULER_MAX, BOUND_RULER_MIN
-			switch ( rulerBoundFlag ) {
-				case BOUND_PROPORTIONAL:
-					// Proportional plots - Baseline offset from middle
-					// No outlier clipping
-					rulerBoundMinKelvin = (ptf->avg.kelvin - ptf->min.kelvin); // No Bounds
-					rulerBoundMaxKelvin = (ptf->max.kelvin - ptf->avg.kelvin); // No Bounds
-					maxBound = minBound = 1;
-					break;
-
-				case BOUND_EQUAL_OUTLIER_CLIPPING:
-					// Equal plots - Baseline in the middle
-					// Outlier clipping
-					rulerBoundMinKelvin = rulerBoundMaxKelvin = 
-						MIN( (ptf->avg.kelvin - ptf->min.kelvin),
-						     (ptf->max.kelvin - ptf->avg.kelvin) );
-					maxBound = minBound = 1;
-					break;
-
-				case BOUND_BELOW_AVG_CLIPPING:
-					// Below average clipping
-					rulerBoundMaxKelvin = ptf->max.kelvin - ptf->avg.kelvin;
-					rulerBoundMinKelvin = 0;
-					maxBound = 1;
-					minBound = 0;
-					break;
-
-				case BOUND_ABOVE_AVG_CLIPPING:
-					// Above average clipping
-					rulerBoundMaxKelvin = 0;
-					rulerBoundMinKelvin = ptf->avg.kelvin - ptf->min.kelvin;
-					maxBound = 0;
-					minBound = 1;
-
-				default: break;
-			}
-
-			float kelvinFactor = getRulerKelvinFactor( FIXED_TC_HEIGHT - 1 );
-
-			minAvgOffsetF = kelvinFactor * rulerBoundMinKelvin; // Should be non-negative
-			maxAvgOffsetF = kelvinFactor * rulerBoundMaxKelvin; // Should be non-negative
-
-			thresholdF = controls.threshold.celsius; // Threshold is a delta C or F
-
-			drawMin    = ( CorF( minF ) < (CorF( avgF ) - thresholdF) );
-			drawMax    = ( CorF( maxF ) > (CorF( avgF ) + thresholdF) );
-
-			// Convert threshold in Celsius or Fahrenheit to relative threshold in Kelvin
-			float kRange = ( ptf->max.kelvin - ptf->min.kelvin );
-
-			//printf("kRange %f, cRange %f, fRange %f\n", kRange, cRange, fRange );
-
-			// Eliminate @ 450 kelvin2Celsius() calls / frame from getRuler[X|Y]Points()
-			// Eliminate @ 450 CorF()           calls / frame from getRuler[X|Y]Points()
-                        if ( Use_Celsius ) {
-				// Interpret threshold as Celsius
-				float cRange = ( ptf->max.celsius - ptf->min.celsius );
-				float kDelta = ( ( thresholdF * kRange ) / cRange );
-
-				minusThresholdKelvin = ( ptf->avg.kelvin - kDelta );
-				plusThresholdKelvin  = ( ptf->avg.kelvin + kDelta );
-			} else {
-				// Interpret threshold as Fahrenheit
-				// Range has to be calculated it like destination units (Apples - Apples)
-				float fRange = celsius2Fahr( ptf->max.celsius ) - 
-					       celsius2Fahr( ptf->min.celsius );
-				float kDelta = ( ( thresholdF * kRange ) / fRange );
-
-				minusThresholdKelvin = ( ptf->avg.kelvin - kDelta );
-				plusThresholdKelvin  = ( ptf->avg.kelvin + kDelta );
-			}
-
-			int anchorY, anchorX;
-
-			if ( Max_Ruler_Thickness ) {
-				float minMaxRange = rulerBoundMaxKelvin + rulerBoundMinKelvin;
-				anchorY = ( TC_HEIGHT - 1 ) * rulerBoundMaxKelvin / minMaxRange;
-				anchorX = ( TC_WIDTH  - 1 ) * rulerBoundMinKelvin / minMaxRange;
-			} else {
-				anchorX = rulersX;
-				anchorY = rulersY;
-			}
-
-			if ( Rulers_Both_Horiz ) {
-				if ( RERENDER_OPTIMIZATION || (lastY != rulersY) ) {
-					rulerXKelvinFactor = getRulerKelvinFactor(
-							( Max_Ruler_Thickness ) ?
-							( TC_HEIGHT       - 1 ) :  /* reversed from getRulerYPoints() */
-							( FIXED_TC_HEIGHT - 1 ) ); /* same as getRulerYPoints() */
-					lastY = rulersY;
-					getRulerXPoints( &thermalFrame, kelvinX,
-						rulerX0Points, rulerX1Points, 0, rulersY, TC_WIDTH, anchorY );
-										/* x=0 to TC_WIDTH */
-				}
-			}
-
-			if ( Rulers_Both_Vert ) {
-				if ( RERENDER_OPTIMIZATION || (lastX != rulersX) ) {
-					rulerYKelvinFactor = getRulerKelvinFactor(
-							( Max_Ruler_Thickness ) ?
-							( TC_WIDTH        - 1 ) :  /* reversed from getRulerXPoints() */
-							( FIXED_TC_HEIGHT - 1 ) ); /* same as getRulerXPoints() */
-					lastX = rulersX;
-					getRulerYPoints( &thermalFrame, kelvinY,
-						rulerY0Points, rulerY1Points, rulersX, 0, TC_HEIGHT, anchorX );
-										/* y=0 to TC_HEIGHT */
-				}
-			}
-
-			if ( Rulers_Both_Horiz_Vert ) {
-				// CALCULATE drawMinMaxRulerLines() globals here to be used by multiple threads ...
-
-				float centerKelvin = user_CENTER_OF_RULER_INDEX->kelvin;
-
-				anchorAvgOffsetF = kelvinFactor * ( centerKelvin - ptf->avg.kelvin );
-
-				copAnchorX        = centerOfPixelNODIV( rulersX );
-				copAnchorY        = centerOfPixelNODIV( rulersY );
-
-				copAnchorX_Offset = centerOfPixelNODIV( round( rulersX + anchorAvgOffsetF ) );
-				copAnchorY_Offset = centerOfPixelNODIV( round( rulersY - anchorAvgOffsetF ) );
-
-				POINT( copAnchorXYPoint, copAnchorX, copAnchorY );
-		
-				copZero	   = centerOfPixelNODIV( 0 );	// both x and y
-				copWidth   = centerOfPixelNoDiv( ( TC_WIDTH  - 1 ) );
-				copHeight  = centerOfPixelNoDiv( ( TC_HEIGHT - 1 ) );
-
-				{ // Precalculate ruler line points
-					int x1, x2, y1, y2;
-
-					// Fullscreen unlocks ruler from plot
-					if ( Max_Ruler_Thickness ) { 
-						y1 = copHeight;
-						y2 = copZero;
-						x1 = copZero;
-						x2 = copWidth;
-					} else {
-						y1 = centerOfPixelNoDiv( round( rulersY + minAvgOffsetF ) );
-						y2 = centerOfPixelNoDiv( round( rulersY - maxAvgOffsetF ) );
-						x1 = centerOfPixelNoDiv( round( rulersX - minAvgOffsetF ) );
-						x2 = centerOfPixelNoDiv( round( rulersX + maxAvgOffsetF ) );
-					}
-
-					POINT( hMin_src, copZero,  y1 );
-					POINT( hMin_dst, copWidth, y1 );
-
-					POINT( hMax_src, copZero,  y2 );
-					POINT( hMax_dst, copWidth, y2 );
-
-					POINT( vMin_src, x1, copZero );
-					POINT( vMin_dst, x1, copHeight );
-
-					POINT( vMax_src, x2, copZero );
-					POINT( vMax_dst, x2, copHeight );
-				}
-
-				// Black baseline start, middle(b & c), end points
-				POINT( hBase_src, copZero,    copAnchorY );
-				POINT( hBase_dst, copWidth,   copAnchorY );
-				POINT( vBase_src, copAnchorX, copZero );
-				POINT( vBase_dst, copAnchorX, copHeight );
-
-// Center flicker control on 1X scale
-#define plus_FLICKER    + MarkerSize 
-#define minus_FLICKER   - MarkerSize 
-#define PLUS_DEBUG     // + MarkerSize
-
-				// Create hole where perpendicular center indicators would overwrite baselines
-				// Not doing so could cause flickers
-				// This only applies to when both rulers are active at the same time
-				// Compare scaled Y to scaled Y to determine where the hole is
-				// Check if the plot line is above or below the center marker
-				// and adjust _b and _c accordingly to NOT overwrite arrows
-				//
-				// NOTE: All 4 permutations are required to handle all corner cases
-				// 		AA AB BB BA
-				// with PORTRATE/LANDSCALE and PROPORTIONAL/FULL thickness rullers
-				// Prevent center point flicker @ 1X and 2X scale
-				if ( rulerX0Points[ rulersX ].y < copAnchorY )
-				{
-					POINT( vPerp, copAnchorX, (copAnchorY minus_FLICKER ) );
-
-					POINT( vBase_b, ( rulerX0Points[ rulersX ].x PLUS_DEBUG ),
-							( rulerX0Points[ rulersX ].y minus_FLICKER ) );
-					POINT( vBase_c, ( copAnchorX PLUS_DEBUG ), ( copAnchorY plus_FLICKER ) );
-				} else {
-					POINT( vPerp, copAnchorX, (copAnchorY plus_FLICKER ) );
-
-					POINT( vBase_b, ( copAnchorX PLUS_DEBUG ), ( copAnchorY minus_FLICKER ) );
-					POINT( vBase_c, ( rulerX0Points[ rulersX ].x PLUS_DEBUG ),
-							( rulerX0Points[ rulersX ].y plus_FLICKER ) );
-				}
-
-				if ( Rulers_Vert ) {
-					POINT( vBase_b, ( copAnchorX PLUS_DEBUG ), ( copAnchorY minus_FLICKER ) );
-					POINT( vBase_c, ( copAnchorX PLUS_DEBUG ), ( copAnchorY plus_FLICKER  ) );
-				}
-
-				if ( rulerY0Points[ rulersY ].x < copAnchorX )
-				{
-					POINT( hPerp, (copAnchorX minus_FLICKER), copAnchorY );
-
-					POINT( hBase_b, ( rulerY0Points[ rulersY ].x minus_FLICKER ),
-							( rulerY0Points[ rulersY ].y PLUS_DEBUG ) );
-					POINT( hBase_c, ( copAnchorX plus_FLICKER ), ( copAnchorY PLUS_DEBUG ) );
-				} else {
-					POINT( hPerp, (copAnchorX plus_FLICKER ), copAnchorY );
-
-					POINT( hBase_b, ( copAnchorX minus_FLICKER ), ( copAnchorY PLUS_DEBUG ) );
-					POINT( hBase_c, ( rulerY0Points[ rulersY ].x plus_FLICKER),
-							( rulerY0Points[ rulersY ].y PLUS_DEBUG ) );
-				}
-
-				if ( Rulers_Horiz ) {
-					POINT( hBase_b, ( copAnchorX minus_FLICKER ), ( copAnchorY PLUS_DEBUG ) );
-					POINT( hBase_c, ( copAnchorX plus_FLICKER  ), ( copAnchorY PLUS_DEBUG ) );
-				}
-
-				// Scale size of arrow head based on center perpendicular indicator line length
-				// to counteract OpenCV's growth algorithm which GROWS TOO FAST
-				// Perpendicular to horizontal, use width length
-				arrowScaleV = (1.0 - (fabs( copAnchorX -
-						rulerX0Points[ rulersX ].x) / SCALED_TC_WIDTH)) * 0.025;
-
-				// Perpendicular to vertical, use height length
-				arrowScaleH = (1.0 - (fabs( copAnchorY -
-						rulerY0Points[ rulersY ].y) / SCALED_TC_HEIGHT))  * 0.025;
-
-// if ( RULERS_BOTH == rulersOn ) { assert(( kelvinX[ rulersX ] == kelvinY[ rulersY ] )); }
-
-				float kTmp;
-				kTmp = kelvinX[ rulersX ];
-				vScalar = ((kTmp < minusThresholdKelvin) ? &RULER_MIN_COLOR :
-				           (kTmp > plusThresholdKelvin)  ? &RULER_MAX_COLOR :
-								           &RULER_MID_COLOR );
-
-				kTmp = kelvinY[ rulersY ];
-				hScalar = ((kTmp < minusThresholdKelvin) ? &RULER_MIN_COLOR :
-					   (kTmp > plusThresholdKelvin)  ? &RULER_MAX_COLOR :
-								           &RULER_MID_COLOR );
-			}
-
-			if ( rulersOn )
-			{
-				// Offset center of ruler label
-				if ( user_CENTER_OF_RULER_INDEX->active ) {
-			                int ht     = 1.5 * chTextHeight;
-					int delta  = ((user_CENTER_OF_RULER_INDEX->labelLoc.y <= ((SCALED_TC_HEIGHT/2) + ht)) ? ht : - ht);
-
-					user_CENTER_OF_RULER_INDEX->labelLoc.y   += delta; 
-					user_CENTER_OF_RULER_INDEX->labelwDLoc.y += delta; 
-				}
-			}
-
-		}
-
-		// THREAD LOAD BALANCING - Prepare scaled pre-processed rendering areas
-
-		if ( RERENDER_OPTIMIZATION ) {
-			// THREAD LOAD BALANCING - Pre-render Colormap Scale into its own RGB image
-			// cmapScale will change based on scaledSFHeight as well as CV_TYPE, thus needs to be remade
-		//	try { 
-				roi.width     = ColorScaleWidth;
-			       	roi.height    = controls.scaledSFHeight;
-				td->cmapScale = td->maxCmapScale( roi ); // Reuse memory
-				drawCmapScale( td->cmapScale, td->maxCmapScale.cols ); 
-		//	} catch (...) {
-		//		printf("\t%s(%d) - cmapScale exception\n", __func__, __LINE__);
-		//		fflush(stdout); fflush(stderr);
-		//	}
-		}
-		
-		TS( td->thermMicros += ( currentTimeMicros() - thermMicros ); ) // track relative benchmarks
+#if 1
+		#include "therm_1.cpp"
+#else
+		// read in file
+#endif
 
         	incAndWait(&WorkerMutex, &td->thermalState, 2); /**************** BLOCKING - Tier 2 */
 
-        	TS( thermMicros = currentTimeMicros(); )
-
-		// Do not display graphics over video
-		if ( controls.hud != HUD_NO_DRAWINGS )
-		{
-			if ( Rulers_Both_Horiz_Vert ) 
-			{
-			//	try {
-					drawRulerPlot( *threadData.rgbFrame, 
-						rulerX0Points, rulerX1Points, scalarX, TC_WIDTH, 1 );
-			//	} catch (...) {
-			//		printf("\t%s(%d) - drawRulersLines exception\n", __func__, __LINE__);
-			//		fflush(stdout); fflush(stderr);
-			//	}
-			}
-	//		try {
-				drawUserAndRulerTemps( 1 );
-	//		} catch (...) {
-	//			printf("\t%s(%d) - drawUserAndRulerTemps exception\n", __func__, __LINE__);
-	//			fflush(stdout); fflush(stderr);
-	//		}
-		}
-
-		if ( controls.hud != HUD_NO_DRAWINGS ) {
-		//	try {
-				// Display floating max temp (while keeping text visible @ display boundaries)
-				if ( drawMax ) {
-					drawTempMarker( *threadData.rgbFrame, ptf->max, RED );
-				}
-		//	} catch (...) {
-		//	}
-		}
-
-		TS( td->thermMicros += ( currentTimeMicros() - thermMicros ); ) // track relative benchmarks
-
-//printf("\t%s(%d) - Halted %ld\n", __func__, __LINE__, currentTimeMicros()); fflush(stdout);
+#if 1
+		#include "therm_2.cpp"
+#else
+		// read in file
+#endif
 
 		incAndWait(&WorkerMutex, &td->thermalState, 3); /**************** BLOCKING - Tier 3 */
 
 	} // end while( 1 )
 
-	printf("%s(%d) - exiting\n", __func__, __LINE__); fflush(stdout);
+	printf("%s(%d) - exiting\n", __func__, __LINE__); FF();
 
 	return ptr;
 }
 
+#endif // if ! DRAW_SINGLE_THREAD /* ] */
 
-int openCamera(VideoCapture &cap, char *camera, char *appName) {
 
+int openCamera( VideoCapture &cap, char *camera, int displayUsage ) {
+
+#if 1
   	cap = VideoCapture(camera, CAP_V4L); // CAP_V4L dictates frame buffer size and format 
+#else
+  	cap = VideoCapture(camera, CAP_FFMPEG); // CAP_FFMPEG dictates frame buffer size and format 
+#endif
 
-	printf("%s(%d): Opening cameara %s\n", __func__,__LINE__, camera); fflush(stdout);
+	printf( BLUE_STR() );
+	printf("%s(%d): Opening cameara %s\n", __func__,__LINE__, camera); FF();
+	printf( RESET_STR() );
  
 	// V4L - Video for Linux
 	// RGB needed for thermal data
@@ -4174,18 +4075,27 @@ int openCamera(VideoCapture &cap, char *camera, char *appName) {
 	cap.set(CAP_PROP_CONVERT_RGB, 0.0); 
 	cap.set(CAP_PROP_MONOCHROME,  1.0); 
 	// TODO-FIXME - Investigate CAP_PROP_FORMAT and -1 for raw
-	// Can it be set CV_16U, 1 channel of unsigned short
+	// Can it be set CV_8UC2, 1 channel of unsigned short
 
 	// Check if camera opened successfully
-	if (!cap.isOpened()) {
-		printf( "\nError opening video stream(%s)\n\tCalling: v4l2-ctl --list-devices\n\n",
-			camera); fflush(stdout);
-		system( "v4l2-ctl --list-devices\n" );
-		printf( "Usage: \n\t%s -d n (where 'n' is the number of the desired video camera)\n\n", appName );
+	if ( ! cap.isOpened() ) {
+		printf( RED_STR() );
+		if ( fileExists( camera ) ) {
+			printf( "\nError opening video stream(%s)\n\n", camera); FF();
+		} else {
+			printf( "\nError camera(%s) does not exist.\n\n", camera); FF();
+		}
+		printf( RESET_STR() );
+
+		dumpV4L2();
+		if ( displayUsage ) {
+			printUsage();
+		}
+
 		return -1;
 	}
 
-	printf("%s(%d): Opened camera %s\n", __func__,__LINE__, camera); fflush(stdout);
+	printf("%s(%d): Opened camera %s\n", __func__,__LINE__, camera); FF();
  
 // gamma(300.00) sharp(50.00) temp(4600.00) hue(0.00) gain(-1.00) contrast(50.00) bright(0.00) exposure(166.00) saturation(64)
 // V4L2
@@ -4234,59 +4144,94 @@ int openCamera(VideoCapture &cap, char *camera, char *appName) {
 double perfMax    = -1; // Keep track of longest thread duration
 double waitMicros = -1; // Keep thread wait times
 
-int parseArgs( int argc, char *argv[], char *camera, VideoCapture &cap ) {
+int parseArgs( int argc, char *argv[], char *camera, VideoCapture &cap, ProcessedThermalFrame *ptf ) {
 	int inputNotFound = -1;
-	int i = 1;
-	for ( ; i < argc; i++ ) {
-		if ( ! strcmp( argv[i], "-scale") ) {
-			MyScale               = abs( atoi( argv[ i + 1 ] ) ) % MAX_SCALE_STEPS;
+	int next;
+	int hasNext;
+	for ( int i = 1; i < argc; i++ ) {
+
+		next    = (i + 1);
+		hasNext = (next < argc);
+
+		if ( ! strcmp( argv[i], "-scale") && hasNext ) {
+			MyScale = abs( atoi( argv[ i + 1 ] ) ) % MAX_SCALE_STEPS;
 			i++;
-		} else if ( ! strcmp( argv[i], "-font") ) {
-			UserFont  = abs( atoi( argv[ i + 1 ] ) ) % MAX_USER_FONT;
+		} else if ( ! strcmp( argv[i], "-font") && hasNext ) {
+			UserFont = abs( atoi( argv[ i + 1 ] ) ) % MAX_USER_FONT;
 			i++;
-		} else if ( ! strcmp( argv[i], "-cmap") ) {
-			controls.cmapCurrent  = abs( atoi( argv[ i + 1 ] ) ) % MAX_CMAPS;
+		} else if ( ! strcmp( argv[i], "-help") ||
+			    ! strcmp( argv[i], "-h") ) {
+  			printInfo();
+			return(-1);
+		} else if ( ! strcmp( argv[i], "-quiet") ||
+			    ! strcmp( argv[i], "-q") ) {
+			quietStdout = 1;
+		} else if ( ! strcmp( argv[i], "-snapshot") ) {
+			takeSnapshot = 1;
+			if ( hasNext && validatePrefix( argv[ next ]) ) {
+				snapshotPrefix = argv[ next ];
+				i++;
+			}
+		} else if ( ! strcmp( argv[i], "-record") ) {
+			takeRecording = 1;
+printf("\n%s-record [prefix] is coming soon ...\n%s", BLUE_STR(), RESET_STR() );
+			if ( hasNext && validatePrefix( argv[ next ]) ) {
+				recordingPrefix = argv[ next ];
+				i++;
+			}
+		} else if ( ! strcmp( argv[i], "-cmap") && hasNext ) {
+			controls.cmapCurrent = abs( atoi( argv[ i + 1 ] ) ) % MAX_CMAPS;
 			i++;
-		} else if ( ! strcmp( argv[i], "-fps") ) {
-			offline_fps  = abs( atoi( argv[ i + 1 ] ) );
+		} else if ( ! strcmp( argv[i], "-fps") && hasNext ) {
+			offline_fps = abs( atoi( argv[ i + 1 ] ) );
 			i++;
-		} else if ( ! strcmp( argv[i], "-clip") ) {
-			rulerBoundFlag  = abs( atoi( argv[ i + 1 ] ) ) % BOUND_MAX_MOD;
+		} else if ( ! strcmp( argv[i], "-clip") && hasNext ) {
+			rulerBoundFlag = abs( atoi( argv[ i + 1 ] ) ) % BOUND_MAX_MOD;
 			i++;
-		} else if ( ! strcmp( argv[i], "-thick") ) {
-			rulerThickness  = 5 - (abs( atoi( argv[ i + 1 ] ) ) % MIN_RULER_THICKNESS);
+		} else if ( ! strcmp( argv[i], "-thick") && hasNext ) {
+			rulerThickness = 5 - (abs( atoi( argv[ i + 1 ] ) ) % MIN_RULER_THICKNESS);
 			i++;
-		} else if ( ! strcmp( argv[i], "-rulers") ) {
+		} else if ( ! strcmp( argv[i], "-rulers") && hasNext ) {
+			threadData.configurationChanged++;
 			rulersOn  = (RulerModes)(abs( atoi( argv[ i + 1 ] ) ) % (int)RULERS_MAX_MOD);// Rollover count, not actual ruler mode
+			if ( rulersOn ) {
+				// Keep rulers at current anchors 
+				rulers(ptf, rulersX, rulersY, 0); 
+			}
 			i++;
-		} else if ( ! strcmp( argv[i], "-rotate") ) {
+		} else if ( ! strcmp( argv[i], "-rotate") && hasNext ) {
+			threadData.configurationChanged++;
 			RotateDisplay = abs( atoi( argv[ i + 1 ] ) );
 			RotateDisplay = DECODE_ROTATION( RotateDisplay );
 			if ( 3 < RotateDisplay ) {
 				RotateDisplay = 0;
 			}
+			rotateDisplay( ptf, 0 );
 			i++;
-		} else if ( ! strcmp( argv[i], "-f"    ) ||
-			    ! strcmp( argv[i], "-file" ) ) {
+		} else if (( ! strcmp( argv[i], "-f"    ) ||
+			     ! strcmp( argv[i], "-file" ) ) && hasNext ) {
 			threadData.source     = "File";
 			threadData.inputFile  = argv[i + 1];
-			printf("%s(%d): Opening file %s\n", __func__,__LINE__, threadData.inputFile); fflush(stdout);
+			if ( ! quietStdout ) {
+//				printf("%s(%d): Opening file %s\n", __func__,__LINE__, threadData.inputFile); FF();
+			}
 			inputNotFound = 0;
 			i++;
-		} else if ( ! strcmp( argv[i], "-d"      ) ||
-			    ! strcmp( argv[i], "-device" ) ) {
+		} else if (( ! strcmp( argv[i], "-d"      ) ||
+			     ! strcmp( argv[i], "-device" ) ) && hasNext ) {
 			threadData.source    = "Camera";
 			sprintf( camera, "/dev/video%d", abs( atoi(argv[i + 1]) ) ); // Default is camera 0
 			threadData.inputFile = 0;
-			printf("%s(%d): Opening camera %s\n", __func__,__LINE__, camera ); fflush(stdout);
-			if ( openCamera( cap, camera, argv[0] ) < 0 ) {
+			if ( ! quietStdout ) {
+//				printf("%s(%d): Opening camera %s\n", __func__,__LINE__, camera ); FF();
+			}
+			if ( openCamera( cap, camera, 1 ) < 0 ) {
 				return -1;
 			}
 			inputNotFound = 0;
 			i++;
-////printf("device(%s)\n", camera);
 		} else {
-			printf("Unknown argv[%d] (%s)\n", i, argv[i] );
+			printf("%sUnknown argv[%d] (%s) or missing value\n%s", RED_STR(), i, argv[i], RESET_STR() );
 			return -1;
 		}
 	}
@@ -4294,12 +4239,14 @@ int parseArgs( int argc, char *argv[], char *camera, VideoCapture &cap ) {
 }
 
 int mainPrivate (int argc, char *argv[]) {
+	mainPrivateMicros = currentTimeMicros();
 
 	nice( -5 );
 
 	setHeightWidth(); // Configure rotation
 
-	ProcessedThermalFrame ptf;
+	ProcessedThermalFrame  ptf_struct;
+	ProcessedThermalFrame *ptf = &ptf_struct;
 
 	// Mat frame;
 	// cv::Mat::Mat(int rows, int cols, int type)
@@ -4313,25 +4260,27 @@ int mainPrivate (int argc, char *argv[]) {
 		          MAX_SCALE_STEPS * FIXED_TC_HEIGHT );
 
 	// Avoid reallocating matrix memory, alloc largest and then use ROI() sub-rectangle
-	// Valgrind complains about maxCmapScale constructor so calling zeros()
-	threadData.maxCmapScale   = Mat::zeros( maxDim, maxDim, CV_8UC2 ); // Scalable Colormap Gradient Scale
+	threadData.maxCmapScale   = Mat( maxDim, maxDim, CV_8UC2 ); // Scalable Colormap Gradient Scale
 
 	// This graphics plane is XOR shared between HUD and HELP
-	maxDim = max( max( longestHUDSize.width,  longestHUDSize.height ), 
+	maxDim = max( max( longestHUDSize.width,  longestHUDSize.height ),
 	              max( longestHelpSize.width, longestHelpSize.height ) );
-	threadData.maxRgbHud      = Mat::zeros( maxDim, maxDim, CV_8UC3 ); // Scalable HUD
+
+	threadData.maxRgbHud      = Mat( maxDim, maxDim, CV_8UC3 ); // Scalable HUD
 
 	threadData.source         = "";
 	threadData.inputFile      = 0; // Flag !0 for file, 0 for camera
 	threadData.FreezeFrame    = 0;
-	threadData.ptf            = &ptf;
+	threadData.ptf            = ptf;
 	threadData.rgbFrame       = &rgbFrame;
 	threadData.rgbFrameOrig   = &rgbFrameOrig;
 	threadData.rawFrame       = &rawFrame;
 	threadData.lostVideo      = 0;
 	threadData.running        = 1;
 
-	setDefaults( &ptf );
+	int64_t startup1 = currentTimeMicros();
+
+	setDefaults( ptf );
 
 	// (code that uses SSE4.2, AVX/AVX2, and other instructions on the platforms that support it)
 	cv::setUseOptimized( true ); // Make sure hardware optimization is enabled
@@ -4339,17 +4288,27 @@ int mainPrivate (int argc, char *argv[]) {
 	//VideoCapture cap(camera, CAP_V4L); // CAP_V4L dictates frame buffer size and format 
 	VideoCapture cap; // CAP_V4L dictates frame buffer size and format 
 
+	int64_t startup2 = currentTimeMicros();
+
 	// Create a VideoCapture object and use camera to capture the video
 	// or use a raw intput file in offline mode
 	char camera[128];
-	if ( parseArgs( argc, argv, camera, cap ) ) {
-		printKeyBindings();
+	if ( parseArgs( argc, argv, camera, cap, ptf ) ) {
+		printUsage();
 		return -1;
 	}
 
-	printKeyBindings();
+	int64_t startup3 = currentTimeMicros();
 
-	newWindow( &ptf ); // Should not start in fullscreen
+	if ( ! quietStdout ) {
+		printVerbose();
+	}
+
+	int64_t startup4 = currentTimeMicros();
+
+	newWindow( ptf ); // Should not start in fullscreen
+
+	int64_t startup5 = currentTimeMicros();
 
 	setMouseCallback( WINDOW_NAME, onMouseCallback, &threadData );
 
@@ -4363,25 +4322,99 @@ int mainPrivate (int argc, char *argv[]) {
 
 	cv::setUseOptimized( true ); // Make sure hardware optimization is enabled
 
-	// Read keyboard input from launching terminal or command file piped into stdin
-	pthread_t stdinThread;   pthread_create( &stdinThread,   NULL, stdinDataThread,   (void*) &threadData );
+#if DRAW_SINGLE_THREAD
+        nice( -20 );
+
+        Rect imageFrameROI = Rect(0, 0, FIXED_TC_WIDTH, FIXED_TC_HEIGHT);
+
+        TS( int64_t imageMicros; )
+        TS( int64_t tmp; )
+
+        Size  size; // Reuse automatic variable
+        Point point;
+        Mat   source, *sourcePtr;
+
+	// NOTE: Misc extra processing has been moved to this shortest parallel
+	//       worker thread for THREAD LOAD BALANCING reasons
+
+        Rect thermROI;
+        thermROI.x = thermROI.y = 0; // x and y are always ZERO
+
+	// Reuse scratch memory without having to copy
+
+        Rect thermFrameROI = Rect(0, FIXED_TC_HEIGHT, FIXED_TC_WIDTH, FIXED_TC_HEIGHT);
+
+        TS( int64_t thermMicros; )
+
+        Mat *thermalFramePtr; // Parallel Histogram processing
+        Mat  copy;
+#else
 	pthread_t imageThread;   pthread_create( &imageThread,   NULL, imageDataThread,   (void*) &threadData );
 	pthread_t thermalThread; pthread_create( &thermalThread, NULL, thermalDataThread, (void*) &threadData );
+#endif
+	// Read keyboard input from launching terminal or command file piped into stdin
+	pthread_t stdinThread;   pthread_create( &stdinThread,   NULL, stdinDataThread,   (void*) &threadData );
 
 	RenderData  rdMain;
 	RenderData *rd = &rdMain;
-	Rect        roi;
-	roi.x = roi.y = 0; // x and y are always ZERO
+	Rect        osdROI;
+	osdROI.x = osdROI.y = 0; // x and y are always ZERO
 
 	// Main loop: process frames, stdin, mouse and keyboard events
 #define FRAME_MICROS (MICROS_PER_SECOND / offline_fps)
-	int64_t loopMicros;
+	int64_t loopMicros = 0;
 	int64_t frame_micros = FRAME_MICROS; // Calc once, use many
 	int lastGoodFrame = 0;	
 
+	int64_t startup6 = currentTimeMicros();
+
+	if ( ! quietStdout ) {
+		printf("Startup timings: s %.3f, var %.3f, suo %.3f, pa %.3f, pkb %.3f, nw %.3f, run %.3f, total %.3f\n",
+			(double)(mainPrivateMicros - startMicros) / 1000.0,
+			(double)(startup1 - mainPrivateMicros) / 1000.0,
+			(double)(startup2 - startup1) / 1000.0,
+			(double)(startup3 - startup2) / 1000.0,
+			(double)(startup4 - startup3) / 1000.0, 
+			(double)(startup5 - startup4) / 1000.0,
+			(double)(startup6 - startup5) / 1000.0,
+			(double)(startup6 - startMicros) / 1000.0
+			);
+	}
+
 	while ( threadData.running ) {
 
-		int64_t readMicros = loopMicros = currentTimeMicros();
+		loopMicros = currentTimeMicros(); // This needs to be set !!!
+
+		// Set these at the top of the loop so they are set on 1st iteration
+		// and every iteration there after
+		// [-snapshot [prefix]] needs rulers initialized properly
+
+	{
+		Rulers_And_Drag		= ( rulersOn && (! leftDragOff) );
+		// Optimization: Don't draw halos while drag scrolling rulers
+		drawTempMarkerPtr	= Rulers_And_Drag ? &drawTempMarkerNoHalo : &drawTempMarker;
+
+		// Optimization: Capture state change varaiables ASAP after processKeyPress()
+		//               and before worker threads are run
+		Rulers_Both		= (( RULERS_BOTH == rulersOn ) && ( HUD_ONLY_VIDEO != controls.hud ));
+		Rulers_XOR		= (( RULERS_VERT == rulersOn || RULERS_HORIZ == rulersOn) && ( HUD_ONLY_VIDEO != controls.hud ));
+		Rulers_Horiz		= (( RULERS_HORIZ == rulersOn ) && ( HUD_ONLY_VIDEO != controls.hud ));
+		Rulers_Vert		= (( RULERS_VERT  == rulersOn ) && ( HUD_ONLY_VIDEO != controls.hud ));
+		Rulers_Both_Horiz	= (( RULERS_BOTH == rulersOn || RULERS_HORIZ == rulersOn ) && ( HUD_ONLY_VIDEO != controls.hud ));
+		Rulers_Both_Vert	= (( RULERS_BOTH == rulersOn || RULERS_VERT  == rulersOn ) && ( HUD_ONLY_VIDEO != controls.hud ));
+		Rulers_Both_Horiz_Vert	=  ( Rulers_Both_Horiz || Rulers_Both_Vert );
+		Max_Ruler_Thickness	=  ( MAX_RULER_THICKNESS == rulerThickness );
+		Horiz_Min_Bound		= ( !(Max_Ruler_Thickness && ((TC_HEIGHT - 1) == rulersY)) );
+		Horiz_Max_Bound		= ( !(Max_Ruler_Thickness && (0 == rulersY)) );
+		Vert_Min_Bound		= ( !(Max_Ruler_Thickness && (0 == rulersX)) );
+		Vert_Max_Bound		= ( !(Max_Ruler_Thickness && ((TC_WIDTH - 1) == rulersX)) );
+
+                BothPlotState		= BothPlotMutex.blockingState;   // Set PlotState to next blocking state
+                CmapPlotState		= CmapPlotMutex.blockingState;   // Set PlotState to next blocking state
+                B4TempPlotState		= B4TempPlotMutex.blockingState; // Set PlotState to next blocking state
+	}
+
+		TS( int64_t readMicros = loopMicros; )
 
 		if ( ! threadData.FreezeFrame ) {
 			if        ( ! threadData.inputFile ) {
@@ -4391,8 +4424,11 @@ int mainPrivate (int argc, char *argv[]) {
 
 				if ( threadData.lostVideo ) {
 					released = 0;
-					if ( openCamera(cap, camera, argv[0]) < 0 ) {
-						printf("Open camera(%s) failed, switching to freeze frame\n", camera);
+					if ( openCamera( cap, camera, 0 ) < 0 ) {
+						printf(RED_STR());
+						printf("\nOpen camera(%s) failed, switching to freeze frame.\n", camera);
+						printf("Fix camera connection and then press 'e' to exit freeze frame.\n\n");
+						printf(RESET_STR());
 						threadData.lostVideo   = 1;
 						threadData.FreezeFrame = 1;
 					} else {
@@ -4423,7 +4459,10 @@ int mainPrivate (int argc, char *argv[]) {
 					}
 
 					if ( readError ) {
-						printf("Frame is empty, swithing to freeze frame\n");
+						printf(RED_STR());
+						printf("\nERROR: Frame is empty, switching to freeze frame.\n");
+						printf("Fix camera connection and then press 'e' to exit freeze frame.\n\n");
+						printf(RESET_STR());
 						if ( ! released ) {
 							cap.release();
 							released = 1;
@@ -4451,9 +4490,9 @@ int mainPrivate (int argc, char *argv[]) {
 			}
 		}
 
-		int64_t mainMicros = currentTimeMicros();
+		TS( int64_t mainMicros = currentTimeMicros(); )
 
-		threadData.readMicros += ( mainMicros - readMicros ); // track relative benchmarks
+		TS( threadData.readMicros += ( mainMicros - readMicros ); ) // track relative benchmarks
 
 		// Assignment is NOT a copy constructor
 
@@ -4476,17 +4515,17 @@ int mainPrivate (int argc, char *argv[]) {
 
 		// rawFrame does not get rotated
 		// end-start(196608) channels(2) elemSize(2:1) total(98304) cols(256) rows(384) type(8) depth(0)
-		ASSERT(( rawFrame.data == rawFrame.datastart ));
-		ASSERT(( ((unsigned long)rawFrame.dataend - (unsigned long)rawFrame.datastart) == (unsigned long)(2*rawFrame.total()) ));
-		ASSERT(( ((unsigned long)rawFrame.cols * (unsigned long)rawFrame.rows) == (unsigned long)rawFrame.total() ));
-		ASSERT((                     2 == rawFrame.channels() ));
-		ASSERT((                     2 == rawFrame.elemSize() ));
-		ASSERT((                     1 == rawFrame.elemSize1() ));
-		ASSERT(((size_t)(FIXED_TC_WIDTH*FIXED_TC_HEIGHT*2) == rawFrame.total() ));
-		ASSERT((  FIXED_TC_WIDTH       == rawFrame.cols ));
-		ASSERT(( (FIXED_TC_HEIGHT * 2) == rawFrame.rows )); // 2 frames
-		ASSERT((  CV_8UC2              == rawFrame.type() )); // 2 channels of uint8
-		ASSERT((                     0 == rawFrame.depth() ));
+		ASSERT(( rawFrame.data == rawFrame.datastart ))
+		ASSERT(( ((unsigned long)rawFrame.dataend - (unsigned long)rawFrame.datastart) == (unsigned long)(2*rawFrame.total()) ))
+		ASSERT(( ((unsigned long)rawFrame.cols * (unsigned long)rawFrame.rows) == (unsigned long)rawFrame.total() ))
+		ASSERT((                     2 == rawFrame.channels() ))
+		ASSERT((                     2 == rawFrame.elemSize() ))
+		ASSERT((                     1 == rawFrame.elemSize1() ))
+		ASSERT(((size_t)(FIXED_TC_WIDTH*FIXED_TC_HEIGHT*2) == rawFrame.total() ))
+		ASSERT((  FIXED_TC_WIDTH       == rawFrame.cols ))
+		ASSERT(( (FIXED_TC_HEIGHT * 2) == rawFrame.rows ))   // 2 frames
+		ASSERT((  CV_8UC2              == rawFrame.type() )) // 2 channels of uint8
+		ASSERT((                     0 == rawFrame.depth() ))
 
 		/***************************************************************************************
 		 * Order of operations:
@@ -4537,8 +4576,10 @@ int mainPrivate (int argc, char *argv[]) {
 
 		// Make this section of the main thread a sync'd peer worker thread to minimize context switches
 		{
+#if ! DRAW_SINGLE_THREAD
 			// Sync all threads including this main thread at the next frame
 			incAndWait(&WorkerMutex, &rd->renderState, 0); /**************** BLOCKING - Tier 0 */
+#endif
 			if ( ! threadData.running ) break; // after keypress
 
 			/* split and rotate imageFrame and thermalFrame */
@@ -4556,20 +4597,26 @@ int mainPrivate (int argc, char *argv[]) {
 				resetFrameCounter();
 			}
 
+#if DRAW_SINGLE_THREAD
+			#include "therm_0.cpp"
+			#include "image_0.cpp"
+#endif
 			TS( rd->renderMicros += ( currentTimeMicros() - renderMicros ); ) // track relative benchmarks
 
+#if ! DRAW_SINGLE_THREAD
 			// Sync all threads including this main thread for sub frame processing
 			incAndWait(&WorkerMutex, &rd->renderState, 1); /**************** BLOCKING - Tier 1 */
+#endif
 
 			TS( renderMicros = currentTimeMicros(); )
 
 			// Thermal sub-frame is ready for read at this sync point
 
-			if ( 0 < ptf.userCount ) {
+			if ( 0 < ptf->userCount ) {
 				const char *labelCF = controls.labelCF;
 
 				// Calculate user/ruler temps which will change with location changes
-				int userCount = min( ptf.userCount, CENTER_OF_RULER_INDEX );
+				int userCount = min( ptf->userCount, CENTER_OF_RULER_INDEX );
 
 				// Calculate CENTER_OF_RULER_INDEX in processThermalFrame
 	
@@ -4582,18 +4629,18 @@ int mainPrivate (int argc, char *argv[]) {
 				}
 			}
 
-			// THREAD LOAD BALANCING - Prepare pre-processed scaled offscreen rendering areas
+			// THREAD LOAD BALANCING - Prepare scaled, pre-processed offscreen rendering areas
 
 			// THREAD LOAD BALANCING - Pre-render HUD into its own RBG image
-			if ( HUD_ON == controls.hud ) {
+			if ( HUD_HUD == controls.hud ) {
 				controls.lastHelpScale = -1; // trigger Help to be redrawn
-				roi.width  = min( HudWidth,  SCALED_TC_WIDTH  );
-				roi.height = min( HudHeight, SCALED_TC_HEIGHT );
-				threadData.rgbHUD = threadData.maxRgbHud( roi ); // Reuse memory
+				osdROI.width  = min( HudWidth,  SCALED_TC_WIDTH  );
+				osdROI.height = min( HudHeight, SCALED_TC_HEIGHT );
+				threadData.rgbHUD = threadData.maxRgbHud( osdROI ); // Reuse memory
 				// Update every 25 frames or when config changes to eliminate config change display lag
 				if ( threadData.configurationChanged || (0 == (controls.frameCounter % (int)NATIVE_FPS)) ) {
 					// Text rendering is expensive because it is rendered twice for background shadow
-					drawHUD( &ptf, threadData.rgbHUD, threadData.source, (threadData.lostVideo ? RED: YELLOW) );
+					drawHUD( ptf, threadData.rgbHUD, threadData.source, (threadData.lostVideo ? RED: YELLOW) );
 				}
 			}
 
@@ -4601,28 +4648,41 @@ int mainPrivate (int argc, char *argv[]) {
 			else if ( HUD_HELP == controls.hud ) {
 				// OPTIMIZATION: Only needs to be drawn once per scale change and HUD_HELP display
 				if ( MyScale != controls.lastHelpScale ) {
-					roi.width  = min( HelpWidth,  SCALED_TC_WIDTH );
-					roi.height = min( HelpHeight, SCALED_TC_HEIGHT );
-					threadData.rgbHUD = threadData.maxRgbHud( roi ); // Reuse memory
+					osdROI.width  = min( HelpWidth,  SCALED_TC_WIDTH );
+					osdROI.height = min( HelpHeight, SCALED_TC_HEIGHT );
+					threadData.rgbHUD = threadData.maxRgbHud( osdROI ); // Reuse memory
 					drawHelp( threadData.rgbHUD );
 				}
 			}
 
+#if DRAW_SINGLE_THREAD
+			#include "therm_1.cpp"
+			#include "image_1.cpp"
+#endif
 			TS( rd->renderMicros += ( currentTimeMicros() - renderMicros ); ) // track relative benchmarks
 
+#if ! DRAW_SINGLE_THREAD
 			// Sync all threads including this main thread for drawing graphics onto scaled rgb layout frame
 			incAndWait(&WorkerMutex, &rd->renderState, 2); /**************** BLOCKING - Tier 2 */
+#endif
 
 			TS( renderMicros = currentTimeMicros(); )
 
-			if ( HUD_NO_DRAWINGS != controls.hud ) {
+			if ( HUD_ONLY_VIDEO != controls.hud ) {
 				drawOneThirdOfTheTemps();
 			}
 
+
+#if DRAW_SINGLE_THREAD
+			#include "therm_2.cpp"
+			#include "image_2.cpp"
+#endif
 			TS( rd->renderMicros += ( currentTimeMicros() - renderMicros ); ) // track relative benchmarks
 
+#if ! DRAW_SINGLE_THREAD
 			// Sync all threads including this main thread at rendering completion prior to showing
 			incAndWait(&WorkerMutex, &rd->renderState, 3); /**************** BLOCKING - Tier 3 */
+#endif
 
 			threadData.configurationChanged = 0x00;
 		}
@@ -4633,7 +4693,15 @@ int mainPrivate (int argc, char *argv[]) {
 		// while this main thread is finishing with the current frame and providing the next frame.
 		// Their thread states should be 0, or 3 transitioning to 0
 
-//printf("%s(%d) - Parallel worker threads finished %ld\n", __func__, __LINE__, currentTimeMicros()); fflush(stdout); fflush(stderr);
+//printf("%s(%d) - Parallel worker threads finished %ld\n", __func__, __LINE__, currentTimeMicros()); FF();
+
+		if ( takeSnapshot ) {
+			printf("%s", GREEN_STR() );
+			printf("\nTaking snapshot and exiting\n");
+			snapshot( &rgbFrame, snapshotPrefix ); // Snapshot
+			printf("%s", RESET_STR() );
+			goto SHUTDOWN;
+		}
 
 		TS( int64_t imshowMicros = currentTimeMicros(); )
 
@@ -4645,19 +4713,33 @@ int mainPrivate (int argc, char *argv[]) {
 		~threadData.cmapScale;
 		~threadData.rgbHUD;
 
-		threadData.mainMicros += currentTimeMicros() - mainMicros; // track linear read and processing
+		TS( threadData.mainMicros += currentTimeMicros() - mainMicros; ) // track linear read and processing
 
 #define N_FRAMES (20.0 * 25.0) // Stat log average timings every N_FRAMES
 
 		if (0 == (controls.frameCounter % (long)N_FRAMES)) {
 
+		    if ( ! quietStdout ) {
+
+#if NO_TS
+			perfMax    = 1.0; // Prevent divide by zero and -nann
+			waitMicros = 0.0;
+#else
+
+#if DRAW_SINGLE_THREAD
+			perfMax    = rdMain.renderMicros;
+			waitMicros = threadData.mainMicros - (rd->renderMicros + threadData.imshowMicros);
+#else
 			perfMax    = rdMain.renderMicros + threadData.thermMicros + threadData.imageMicros;
 			waitMicros = threadData.mainMicros - 
 				( max( threadData.thermMicros, threadData.imageMicros ) + threadData.imshowMicros);
+#endif
+
+#endif
 
 			printf(                // mls read rotation [ render | therm | image ] + show main wait
-"main:thrm:img (%.2f : %.2f : %.2f) scale %d fps %.1f read %.2f rot %.2f : [%.2f | %.2f | %.2f] + %.2f %s%.2f%s %s%.2f%s %s %s\n",
-				(double)rdMain.renderMicros / perfMax,
+"main:thrm:img (%.2f : %.2f : %.2f) scale %d fps %.1f read %.2f rot %.2f : [%.2f | %.2f | %.2f] + %.2f %s%.2f%s %s%.2f%s %s %s : h %.2f v %.2f\n",
+				(double)rdMain.renderMicros    / perfMax,
 				(double)threadData.thermMicros / perfMax,
 				(double)threadData.imageMicros / perfMax,
 				MyScale, controls.fps, 
@@ -4674,12 +4756,21 @@ int mainPrivate (int argc, char *argv[]) {
 				((double)waitMicros / 1000.0 / N_FRAMES),
 				RESET_STR(),
 				rulerModesStr(rulersOn), 
-				hudFormatStr(controls.hud));
+				hudFormatStr(controls.hud),
+				threadData.horizMicros / 1000.0 / N_FRAMES, 
+				threadData.vertMicros  / 1000.0 / N_FRAMES
+				);
+		    }
 
 			threadData.thermMicros = threadData.imageMicros = threadData.rotMicros    = 0;
+			threadData.horizMicros = threadData.vertMicros  = 0;
 			threadData.mainMicros  = threadData.readMicros  = threadData.imshowMicros = 0;
 			rdMain.renderMicros = 0;
 		}
+
+#if DRAW_SINGLE_THREAD
+		#include "image_3.cpp" // Handle record
+#endif
 
 		// Read key from OpenCV (give it priority over stdin)
 		// To put waitKeyEx(1) in it's own thread, 
@@ -4693,14 +4784,21 @@ int mainPrivate (int argc, char *argv[]) {
 		int c = (char)waitKeyEx( 1 );
 #endif
 
+#if 0
+		if ( takeRecording ) {
+			// Determine length in frames, seconds, etc.
+			break;  
+		}
+#endif
+
 		// multiple onMouseCallbacks can happen while in waitKeyEx()
 		// ONLY PROCESS LAST ONE to save CPU cycles !!!
 		if ( 0 < MRD.mouseActive ) {
 			// Debounce multiple onMouseCallback results in a single frame
 			if ( rulersOn ) {
 				normalizeCB( &MRD.x, &MRD.y );
-				rulers( &ptf, MRD.x / MyScale,
-				 	      MRD.y / MyScale, 0 );
+				rulers( ptf, MRD.x / MyScale,
+				 	     MRD.y / MyScale, 0 );
 			}
 			MRD.mouseActive = 0;
 		}
@@ -4712,30 +4810,9 @@ int mainPrivate (int argc, char *argv[]) {
 
 		if ((-1 != c) && ('q' != c)) {
 			// Configuration changes happen here in state machine !!!
-			processKeypress( c, &ptf, &rgbFrame );
+			processKeypress( c, ptf, &rgbFrame );
 		}
 
-		// Optimization: Don't draw halos while drag scrolling rulers
-		drawTempMarkerPtr	= ( rulersOn && (! leftDragOff) ) ? &drawTempMarkerNoHalo : &drawTempMarker;
-
-		// Optimization: Capture state change varaiables ASAP after processKeyPress()
-		//               and before worker threads are run
-		Rulers_Both		= (( RULERS_BOTH == rulersOn ) && ( HUD_NO_DRAWINGS != controls.hud ));
-		Rulers_XOR		= (( RULERS_VERTICAL == rulersOn || RULERS_HORIZONTAL == rulersOn) && ( HUD_NO_DRAWINGS != controls.hud ));
-		Rulers_Horiz		= (( RULERS_HORIZONTAL == rulersOn ) && ( HUD_NO_DRAWINGS != controls.hud ));
-		Rulers_Vert		= (( RULERS_VERTICAL   == rulersOn ) && ( HUD_NO_DRAWINGS != controls.hud ));
-		Rulers_Both_Horiz	= (( RULERS_BOTH == rulersOn || RULERS_HORIZONTAL == rulersOn ) && ( HUD_NO_DRAWINGS != controls.hud ));
-		Rulers_Both_Vert	= (( RULERS_BOTH == rulersOn || RULERS_VERTICAL   == rulersOn ) && ( HUD_NO_DRAWINGS != controls.hud ));
-		Rulers_Both_Horiz_Vert	=  ( Rulers_Both_Horiz || Rulers_Both_Vert );
-		Max_Ruler_Thickness	=  ( MAX_RULER_THICKNESS == rulerThickness );
-		Horiz_Min_Bound		= ( !(Max_Ruler_Thickness && ((TC_HEIGHT - 1) == rulersY)) );
-		Horiz_Max_Bound		= ( !(Max_Ruler_Thickness && (0 == rulersY)) );
-		Vert_Min_Bound		= ( !(Max_Ruler_Thickness && (0 == rulersX)) );
-		Vert_Max_Bound		= ( !(Max_Ruler_Thickness && ((TC_WIDTH - 1) == rulersX)) );
-
-                BothPlotState		= BothPlotMutex.blockingState;   // Set PlotState to next blocking state
-                CmapPlotState		= CmapPlotMutex.blockingState;   // Set PlotState to next blocking state
-                B4TempPlotState		= B4TempPlotMutex.blockingState; // Set PlotState to next blocking state
 
 #if 1
 		if ( threadData.inputFile || threadData.FreezeFrame ) {
@@ -4756,7 +4833,7 @@ int mainPrivate (int argc, char *argv[]) {
 
 	} // End for loop
 
-// SHUTDOWN:
+SHUTDOWN:
 
 	// Tell threads to exit
 	exitAllThreads();
@@ -4796,7 +4873,9 @@ int mainPrivate (int argc, char *argv[]) {
 	return 0;
 }
 
+
 int main (int argc, char *argv[]) {
+	initStartMicros();
 
 	nice( -1 );
 
