@@ -84,7 +84,8 @@ Rewritten with additional functionality, bug fixes, optimizations and offline po
 
 Thermal Camera Redux:
 	
-Built with display 2560x1600, max:default scale 8:4, rotation 0, default Fahrenheit, 37 colormaps, Jet<br />
+Built with display 2560x1600, max:default scale 8:4, rotation 0, default Fahrenheit, 37 colormaps, Jet,<br />
+    Multi-threaded with drag scrolling<br />
 
 Tested on IvyBridge & Coffee Lake Debian 11 PCs with all features working<br />
 Tested by Amish Technician (from EEVblog) on numerous RPi models including RPi Zero 2w, 2, 3, 4 and 5<br />
