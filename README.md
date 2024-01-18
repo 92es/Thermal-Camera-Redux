@@ -1,7 +1,7 @@
 # Thermal-Camera-Redux
  Topdon TC001 (and clones) Linux thermal camera app to read and display live and offline thermal data.<br />
 
-Ported and updated to Linux C/C++ app based on Les Wright's 21 June 2023 Python app.<br />
+Ported and updated to Linux C/C++ app based on Les Wright's 21 June 2023 PyThermalCamera Python app.<br />
   - All prior licenses apply.<br />
   - https://github.com/leswright1977/PyThermalCamera - Python script <br />
   - https://github.com/92es/Thermal-Camera-Redux     - Ported C/C++ app <br />
