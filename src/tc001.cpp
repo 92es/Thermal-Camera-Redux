@@ -49,6 +49,7 @@ using namespace cv;
 	Minor optimizations to Histogram Equalization filter
 		196.806 seconds with long script
   
+  Notes: Explore using cv::LUT() for custom colormaps
   Notes: Explore more fixed-point for platforms without hardware FPU
   	  1 degree Fahrenheight = 255.928 Kelvin
   	100 degree Fahrenheight = 310.928 Kelvin
@@ -504,7 +505,7 @@ void applyMyColorMap( InputArray src, OutputArray dst, int cmapsIndex ) {
 
 		// Swap Blue and Reds on selected stock colormaps - BlueGreenRed to RedGreenBlue
 		if ( cmaps[ cmapsIndex ]->bgr2rgb ) {
-			cvtColor(src, dst, COLOR_BGR2RGB, CVT_CHAN_FLAG);
+			cvtColor(dst, dst, COLOR_BGR2RGB, CVT_CHAN_FLAG);
 		}
 
 	} else if ( COLORMAP_MATRIX == cmaps[ cmapsIndex ]->type ) {
@@ -1004,6 +1005,12 @@ typedef struct {
  
 static ThreadData threadData;
 
+#if 1
+#define RERENDER_OPTIMIZATION  ( threadData.configurationChanged || ( ! threadData.inputFile && ! threadData.FreezeFrame ) )
+#else
+#define RERENDER_OPTIMIZATION  ( 1 )
+#endif
+
 #define NUMBER_OF_CLIENTS  3  // mainThread, thermalDataThread, imageDataThread
 #define EXIT_STATE         (int)(0xDeadBeef)
 
@@ -1091,11 +1098,6 @@ void incAndWait( IncWaitMutex *mutex, int *threadState, int blockingState ) {
 	pthread_mutex_unlock( &mutex->condMutex );
 }
 
-#if 1
-#define RERENDER_OPTIMIZATION  ( threadData.configurationChanged || ( ! threadData.inputFile && ! threadData.FreezeFrame ) )
-#else
-#define RERENDER_OPTIMIZATION  ( 1 )
-#endif
 
 void dumpFrameInfo(Mat *frame);
 
@@ -2584,8 +2586,9 @@ void snapshot( Mat *frame, const char *prefix ) {
 	time_t rawtime;
 	struct tm * timeinfo;
 	char now [128];
-	char filename[256];
-	char rawname[256];
+#define FN_SIZE 256
+	char filename[FN_SIZE];
+	char rawname[FN_SIZE];
 
 	time (&rawtime);
 	timeinfo = localtime (&rawtime);
@@ -2594,8 +2597,14 @@ void snapshot( Mat *frame, const char *prefix ) {
 	strftime (controls.snaptime, sizeof(controls.snaptime), "%H:%M:%S", timeinfo);
 
 	if ( validatePrefix( prefix ) ) {
-		sprintf(filename, "%s.png", prefix);
-		sprintf(rawname,  "%s.raw", prefix);
+#define MAX_PREFIX (FN_SIZE - (sizeof(".png") + 1))
+		// Make RPi compiler happy
+		strncpy( filename, prefix, MAX_PREFIX );
+		strncpy( rawname,  prefix, MAX_PREFIX );
+		filename[ MAX_PREFIX ] = 0x00;
+		rawname[  MAX_PREFIX ] = 0x00;
+		strcat( filename, ".png");
+		strcat( rawname,  ".raw");
 	} else {
 		sprintf(filename, "TC001%s.png", now);
 		sprintf(rawname,  "TC001%s.raw", now);
@@ -4356,7 +4365,6 @@ int mainPrivate (int argc, char *argv[]) {
 	pthread_t stdinThread;   pthread_create( &stdinThread,   NULL, stdinDataThread,   (void*) &threadData );
 
 	RenderData  rdMain;
-	RenderData *rd = &rdMain;
 	Rect        osdROI;
 	osdROI.x = osdROI.y = 0; // x and y are always ZERO
 
@@ -4578,7 +4586,7 @@ int mainPrivate (int argc, char *argv[]) {
 		{
 #if ! DRAW_SINGLE_THREAD
 			// Sync all threads including this main thread at the next frame
-			incAndWait(&WorkerMutex, &rd->renderState, 0); /**************** BLOCKING - Tier 0 */
+			incAndWait(&WorkerMutex, &rdMain.renderState, 0); /**************** BLOCKING - Tier 0 */
 #endif
 			if ( ! threadData.running ) break; // after keypress
 
@@ -4601,11 +4609,11 @@ int mainPrivate (int argc, char *argv[]) {
 			#include "therm_0.cpp"
 			#include "image_0.cpp"
 #endif
-			TS( rd->renderMicros += ( currentTimeMicros() - renderMicros ); ) // track relative benchmarks
+			TS( rdMain.renderMicros += ( currentTimeMicros() - renderMicros ); ) // track relative benchmarks
 
 #if ! DRAW_SINGLE_THREAD
 			// Sync all threads including this main thread for sub frame processing
-			incAndWait(&WorkerMutex, &rd->renderState, 1); /**************** BLOCKING - Tier 1 */
+			incAndWait(&WorkerMutex, &rdMain.renderState, 1); /**************** BLOCKING - Tier 1 */
 #endif
 
 			TS( renderMicros = currentTimeMicros(); )
@@ -4659,11 +4667,11 @@ int mainPrivate (int argc, char *argv[]) {
 			#include "therm_1.cpp"
 			#include "image_1.cpp"
 #endif
-			TS( rd->renderMicros += ( currentTimeMicros() - renderMicros ); ) // track relative benchmarks
+			TS( rdMain.renderMicros += ( currentTimeMicros() - renderMicros ); ) // track relative benchmarks
 
 #if ! DRAW_SINGLE_THREAD
 			// Sync all threads including this main thread for drawing graphics onto scaled rgb layout frame
-			incAndWait(&WorkerMutex, &rd->renderState, 2); /**************** BLOCKING - Tier 2 */
+			incAndWait(&WorkerMutex, &rdMain.renderState, 2); /**************** BLOCKING - Tier 2 */
 #endif
 
 			TS( renderMicros = currentTimeMicros(); )
@@ -4677,11 +4685,11 @@ int mainPrivate (int argc, char *argv[]) {
 			#include "therm_2.cpp"
 			#include "image_2.cpp"
 #endif
-			TS( rd->renderMicros += ( currentTimeMicros() - renderMicros ); ) // track relative benchmarks
+			TS( rdMain.renderMicros += ( currentTimeMicros() - renderMicros ); ) // track relative benchmarks
 
 #if ! DRAW_SINGLE_THREAD
 			// Sync all threads including this main thread at rendering completion prior to showing
-			incAndWait(&WorkerMutex, &rd->renderState, 3); /**************** BLOCKING - Tier 3 */
+			incAndWait(&WorkerMutex, &rdMain.renderState, 3); /**************** BLOCKING - Tier 3 */
 #endif
 
 			threadData.configurationChanged = 0x00;
