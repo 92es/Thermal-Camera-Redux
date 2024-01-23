@@ -82,6 +82,9 @@ Rewritten with additional functionality, bug fixes, optimizations and offline po
 -  Linux, C/C++, OpenCV(V4L) and pthread libraries.
 -  Optional build flags optimized for weak and single core / single threaded hardware.
 
+## Raspberry Pi Build Help:
+-  See the [RPi/SBC build help notes.](./doc/RPi.md)
+
 Thermal Camera Redux:
 	
 Built with display 2560x1600, max:default scale 8:4, rotation 0, default Fahrenheit, 37 colormaps, Jet,<br />
