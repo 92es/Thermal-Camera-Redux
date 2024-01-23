@@ -11,11 +11,13 @@ Enter the following in a terminal on Raspberry Pi OS (or Debian derived distro o
  `sudo apt update && sudo apt install libopencv-dev`
 
 
-Open the 'build_redux' file in the 'src' source directory with a text editor and configure the options for your device, or just replace the contents of this file with my one size fits all 'build_redux' script which should work on PC, all raspberry pi's, and likely most other similar SBCs:
+The 'build_redux_rpi' script in the src directory contains my one size fits all edits which should work on PC, all raspberry pi's, and likely most other similar SBCs:
 
-`
-<<< Insert build_redux_pi file link here. >>>
-`
+
+See the [build_redux_rpi.](../src/build_redux_rpi)
+
+There are also various startup customization flags that can be edited such as display size, C or F displays, rotation (portrait/landscape), colormap, font, etc. 
+
 
 ## Single thread, single core SBCs
 
@@ -29,9 +31,11 @@ Change these default flags to =1 for improved performance on Pi Zero 1 (W), Pi 1
 
 Then from the directory with the source files run the build script:
 
-  `chmod +x build_redux`
+  `chmod +x build_redux_rpi`
   
-  `sudo ./build_redux`
+  `sudo ./build_redux_rpi`
+
+The chmod command only needs to be run once because github does not appear to preserve the execution permissions. 
 
 ## Run
 
