@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# Build Thermal Camera Redux
+
+echo "Building redux and test_driver ..."
+
+rm ./redux
+
+# Change build flags based on your hardware
+CFLAGS='-march=native -mtune=native -pipe -fomit-frame-pointer'
+
+# Setup default startup configuration options
+
+# ROTATION options:         0, 90, 180, 270
+# USE_CELSIUS options:      0, 1
+# DEFAULT_COLORMAP options: 0 - 36
+# USE_ASSERT:               0, 1
+# HUD_ALPHA:                0.0 = Full Transparent, 1.0 Full Opaque, Default 0.4
+
+#  VGA -  800 x  480 is a max 2X scale
+#        1280 x  720 is a max 3X scale
+#        1920 x 1080 is a max 5X scale
+#        2560 x 1440 is a max 7X scale
+
+# 2560 x 1600 is a max 8X scale
+DEFAULT_FLAGS='-DNO_TS=0 -DNO_DRAG=0 -DFAST_DRAG=0 -DDRAW_SINGLE_THREAD=0 -DDEFAULT_FONT=0 -DDEFAULT_COLORMAP=4 -DROTATION=0 -DDISPLAY_WIDTH=1920 -DDISPLAY_HEIGHT=1080 -DUSE_CELSIUS=1 -DHUD_ALPHA=0.4'
+#DEFAULT_FLAGS='-DDEFAI:T_FONT=0 -DDEFAULT_COLORMAP=4 -DROTATION=0 -DDISPLAY_WIDTH=1024 -DDISPLAY_HEIGHT=768 -DUSE_CELSIUS=0 -DHUD_ALPHA=0.4'
+#DEFAULT_FLAGS='-DDEFAI:T_FONT=0 -DDEFAULT_COLORMAP=4 -DROTATION=0 -DDISPLAY_WIDTH=320 -DDISPLAY_HEIGHT=240 -DUSE_CELSIUS=0 -DHUD_ALPHA=0.4'
+#DEFAULT_FLAGS='-DDEFAI:T_FONT=0 -DDEFAULT_COLORMAP=4 -DROTATION=0 -DDISPLAY_WIDTH=1280 -DDISPLAY_HEIGHT=1024 -DUSE_CELSIUS=0 -DHUD_ALPHA=0.4'
+
+# Compile and link Redux Thermal Camera code
+g++ -Wall -Wextra -O3 -ffast-math ${DEFAULT_FLAGS} ${CFLAGS} -DUSE_ASSERT=0 -I/usr/include/opencv4 tc001.cpp thread.cpp -o redux -lpthread `pkg-config --cflags --libs opencv4`
+
+
+# Debug for gprof, valgrind and perf
+#g++ -Wall -Wextra -ffast-math -pg -ggdb3 ${DEFAULT_FLAGS} ${CFLAGS} -DUSE_ASSERT=0 -I/usr/include/opencv4 tc001.cpp thread.cpp -o redux -lpthread `pkg-config --cflags --libs opencv4`
+
+gcc -Wall test_driver.c -o test_driver
+
