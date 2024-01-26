@@ -21,7 +21,7 @@ using namespace cv;
 
 #include "thread.h" // threads and FIFO ring buffer
 
-#define VERSION_STR "0.9.1"
+#define VERSION_STR "0.9.2"
 /*****************************************************************************************
 
   NOTE: No implied or expressed useability guarantee or warranty.  
@@ -48,6 +48,10 @@ using namespace cv;
 	-DNO_TS=0 yields 198.033 seconds with long script, latency-performance
 	Minor optimizations to Histogram Equalization filter
 		196.806 seconds with long script
+  2024-01-25 - 0.9.2 - Added emulation of locking camera's colormap auto ranging 
+	controlled with 'i' & 'k' (mapping filters) and 'l' (none, static, dynamic) keys.
+	Added [ -fullscreen ]
+	Fixed [ -scale max ] rollover bug
   
   Notes: Explore using cv::LUT() for custom colormaps
   Notes: Explore more fixed-point for platforms without hardware FPU
@@ -70,7 +74,7 @@ using namespace cv;
 	*remainder = numerator % denominator;
 
 #if USE_ASSERT
-#define ASSERT(a) assert a
+#define ASSERT(a) assert a ;
 #else
 #define ASSERT(a)	/* compile out assert statements */
 #endif
@@ -312,6 +316,93 @@ Point rulerY1Points[max(FIXED_TC_WIDTH, FIXED_TC_HEIGHT)];  // Calc entire col o
 char  rawRecFilename[256] = "now_output.raw";
 FILE *rawRecFp  = 0x00;
 FILE *rawReadFp = 0x00;
+
+typedef enum {
+	FILTER_TYPE_NONE,	// Darker than CENTER
+
+	FILTER_TYPE_LINEAR,	// Darker than CENTER
+	FILTER_TYPE_LINEAR_2,
+
+	// THESE 2 ARE THE SAME
+//	FILTER_TYPE_CENTER,	// Same as SIN180 ???
+	FILTER_TYPE_SIN180,	// Same as CENTER
+
+	FILTER_TYPE_CENTER_2,   // Brigher than CENTER
+	FILTER_TYPE_UC2,	// Brighter SIN180 (close to CENTER_2)
+	FILTER_TYPE_UC90,	// Brighter than UC2
+	FILTER_TYPE_UC135,	// Brighter than UC2
+	FILTER_TYPE_UC180,	// Brighter than UC90
+
+	FILTER_TYPE_OUTER,
+	FILTER_TYPE_OUTER_2,
+
+	FILTER_TYPE_COS360,	// Dark
+
+	FILTER_TYPE_MAX
+} FILTER_TYPES;
+
+extern unsigned short thermalRangeFilter_Generic( unsigned int thermalPixel );
+extern unsigned short thermalRangeFilter_Linear( unsigned int thermalPixel );
+
+static unsigned short (*thermalRangeFilter_FxPtr)( unsigned int ) = &thermalRangeFilter_Linear;
+static int filterType  = FILTER_TYPE_LINEAR;
+static int filterType2 = 0;
+
+const char *filterTypeStr( int ft ) {
+#ifdef MY_CASE
+#undef MY_CASE
+#endif
+// Strip off "FILTER_TYPE_" prefix
+#define MY_CASE(a) case (a): return (const char *)(#a + sizeof("FILTER_TYPE"));
+	switch ( ft ) {
+		MY_CASE( FILTER_TYPE_NONE )
+
+		MY_CASE( FILTER_TYPE_LINEAR )
+		MY_CASE( FILTER_TYPE_LINEAR_2 )
+
+	// THESE 2 ARE THE SAME
+//		MY_CASE( FILTER_TYPE_CENTER )
+		MY_CASE( FILTER_TYPE_SIN180 )
+
+		MY_CASE( FILTER_TYPE_CENTER_2 )
+		MY_CASE( FILTER_TYPE_UC2 )
+		MY_CASE( FILTER_TYPE_UC90 )
+		MY_CASE( FILTER_TYPE_UC135 )
+		MY_CASE( FILTER_TYPE_UC180 )
+
+		MY_CASE( FILTER_TYPE_OUTER )
+		MY_CASE( FILTER_TYPE_OUTER_2 )
+
+		MY_CASE( FILTER_TYPE_COS360 )
+		default: break;
+	}
+	return "Undefined";
+}
+
+
+typedef enum {
+	AUTO_RANGE_NONE = 0,
+	AUTO_RANGE_CLIP = 1,
+	AUTO_RANGE_GROW = 2,
+	AUTO_RANGE_MAX  = 3
+} AUTO_RANGE_TYPES;
+
+pthread_mutex_t		lockAutoRangingMutex_therm = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t		lockAutoRangingMutex_image = PTHREAD_MUTEX_INITIALIZER;
+static int		lockAutoRanging = 0;
+static unsigned short	globalKelvinMin = USHRT_MAX;
+static unsigned short	globalKelvinMax = 0;
+static unsigned short	globalKelvinRange = 0;
+static unsigned short	frameKelvinMin   = 0;
+static unsigned short	frameKelvinMax   = 0;
+static unsigned short	frameKelvinRange = 0;
+
+static unsigned short	globalImgMin = USHRT_MAX;
+static unsigned short	globalImgMax = 0;
+static unsigned short	globalImgRange = 0;
+static unsigned short	frameImgMin  = USHRT_MAX;
+static unsigned short	frameImgMax  = 0;
+static unsigned short	frameImgRange = 0;
 
 static int leftDragOff = 1; // Track left mouse buttion drag
 
@@ -860,7 +951,7 @@ static Temperature *user_CENTER_OF_RULER_INDEX = &users[CENTER_OF_RULER_INDEX];
 // Optimization: Remove if's from rendering routines by using function pointer
 extern void drawTempMarker( Mat & frame, Temperature &temp, Scalar &dotColor );
 extern void drawTempMarkerNoHalo( Mat & frame, Temperature &temp, Scalar &dotColor );
-void (*drawTempMarkerPtr)( Mat &, Temperature &, Scalar & ) = &drawTempMarker;
+static void (*drawTempMarker_FxPtr)( Mat &, Temperature &, Scalar & ) = &drawTempMarker;
 
 // Loop unrolls:
 #define DO_ALL_HORIZ()		DO_USER(0) DO_USER(1) DO_USER(2) DO_USER(3) DO_USER(4)  DO_USER(5)
@@ -1496,6 +1587,12 @@ void resetFrameCounter() {
 	controls.startMills   = currentTimeMillis();
 }
 
+void resetLockAutoRanging() {
+	thermalRangeFilter_FxPtr = &thermalRangeFilter_Linear;
+	filterType  = FILTER_TYPE_LINEAR;
+	filterType2 = 0;
+}
+
 void resetDefaults() {
 
 	threadData.configurationChanged++;
@@ -1504,6 +1601,8 @@ void resetDefaults() {
 	rulerBoundFlag = BOUND_PROPORTIONAL;
 
 	resetFrameCounter();
+
+	resetLockAutoRanging();
 
 	controls.hud          = HUD_HUD;
 
@@ -1527,7 +1626,7 @@ static int HudHeight  	   = 134;   // 134
 static int HelpWidth       = TC_WIDTH;
 static int HelpHeight      = TC_HEIGHT; 
 
-#define MAX_HELP_TEXT_ROWS (19 + 1)  // Was (24 + 1)
+#define MAX_HELP_TEXT_ROWS (20 + 1)  // Was (24 + 1)
 #define MAX_HUD_TEXT_ROWS  ( 9 + 1)
 
 const char * LONGEST_HUD_STRING  = "Map: Twighlight Shift+Hist";
@@ -1568,7 +1667,11 @@ void setScaleControls() {
 	setWindowFormat();
 
 	// Scale Colormap Scale Widget width
+#if 1
+	ColorScaleWidth = 5 + MyScale;  // 5 to N
+#else
 	ColorScaleWidth = 3 + MyScale;  // 4 to N
+#endif
 
 	// Help needs to be redrawn based on font change
 	controls.lastHelpScale = -1; // trigger Help to be redrawn
@@ -1921,6 +2024,115 @@ void calcTempDisplayLocations( Temperature &temp ) {
 	POINT( temp.labelLoc,  x + xOffset, y + yOffset );
 }
 
+typedef struct {
+	unsigned long long image;
+	unsigned long long therm;
+	unsigned long long min;
+	unsigned long long max;
+	unsigned long count;
+} HACK;
+
+void dumpStuff() {
+
+	unsigned long maxPixels = TC_WIDTH * TC_HEIGHT;
+
+#define MAX_INDEX 256
+	HACK hack[ MAX_INDEX ];
+
+       	unsigned short *imagePtr = &((unsigned short *)(imageFrame.datastart))[0];
+        unsigned short *thermPtr = &((unsigned short *)(thermalFrame.datastart))[0];
+
+	memset( &hack[0], 0, sizeof(hack) );
+
+	for ( unsigned long i = 0; ( i < maxPixels ); i++ ) {
+		assert ( 32768 <= imagePtr[ i ] );
+
+		unsigned long hi = imagePtr[ i ] - 32768;
+
+printf("hi %lu, i %lu, %u,  %u\n", hi, i,
+		(unsigned short)(imagePtr[ i ] - 32768),
+		(unsigned short)(thermPtr[ i ])
+      );
+
+		assert( hi < MAX_INDEX );
+
+		unsigned long therm = (unsigned short)(thermPtr[ i ]);
+
+		hack[ hi ].image += (unsigned short)(imagePtr[ i ] - 32768 );
+		hack[ hi ].therm += therm;
+		hack[ hi ].count++;
+
+		if ( 0 == hack[ hi ].min ) {
+			hack[ hi ].min = therm;
+		}
+		if ( 0 == hack[ hi ].max ) {
+			hack[ hi ].max = therm;
+		}
+
+		if ( therm < hack[ hi ].min ) {
+			hack[ hi ].min = therm;
+		}
+		if ( therm > hack[ hi ].max ) {
+			hack[ hi ].max = therm;
+		}
+	}
+
+	FILE *fp = fopen("dump.txt", "w");
+
+#if 0
+	frameKelvinMin   =  kmin;
+	frameKelvinMax   =  kmax;
+	frameKelvinRange = (kmax - kmin);
+#endif
+
+	unsigned long j = 0;
+	for ( unsigned long i = 0; ( i < MAX_INDEX ); i++ ) {
+
+		if ( 0 < hack[i].count ) {
+			hack[ i ].image = hack[i].image / hack[i].count;
+			hack[ i ].therm = hack[i].therm / hack[i].count;
+		}
+
+		if ( 0 < i ) {
+			j = i - 1;
+		}
+
+
+fprintf(fp,"%03lu,  %4.llu,  %6.llu,  %5.llu, %5.llu,  %5.llu,   %4.lld,  %6.lld,  %6.lld, %6.lld,  %6.lu\n",
+			i,
+			hack[ i ].image,
+			hack[ i ].image + ((hack[ i ].count) ? 32768 : 0),
+			hack[ i ].min,
+			hack[ i ].therm, // Avg
+			hack[ i ].max,
+			(long long)(hack[ i ].max - hack[ i ].min),
+((hack[i].count) ? (long long)(hack[ i ].therm - frameKelvinMin) : (long long)0),
+			(long long)(hack[ i ].min - hack[ j ].min),
+			(long long)(hack[ i ].max - hack[ j ].max),
+			hack[ i ].count
+		       );
+
+printf("%03lu,  %4.llu,  %6.llu,  %5.llu,  %5.llu,  %5.llu,   %4.lld,  %6.lld,  %6.lld, %6.lld,  %6.lu\n",
+			i,
+			hack[ i ].image,
+			hack[ i ].image + ((hack[ i ].count) ? 32768 : 0),
+			hack[ i ].min,
+			hack[ i ].therm, // Avg
+			hack[ i ].max,
+			(long long)(hack[ i ].max - hack[ i ].min),
+((hack[i].count) ? (long long)(hack[ i ].therm - frameKelvinMin) : (long long)0),
+			(long long)(hack[ i ].min - hack[ j ].min),
+			(long long)(hack[ i ].max - hack[ j ].max),
+			hack[ i ].count
+		      );
+
+	}
+
+	fclose(fp);
+
+	system("sort dump.txt > dump.txt.s");
+}
+
 // Process every 2-byte temperature pixel in the thermal frame
 // Data mine Min/Avg/Max and center of frame temperatures and their
 //     respective x=col, y=row locations (Avg has no location)
@@ -1962,10 +2174,20 @@ void processThermalFrame( ProcessedThermalFrame *ptf, Mat *thermalFrame ) {
 
 	// Parse bottom frame to harvest heat data
 	// Start of thermal frame data
-        unsigned short *usStartPtr = &((unsigned short *)(thermalFrame->datastart))[0];
+        unsigned short *usStartPtr  = &((unsigned short *)(thermalFrame->datastart))[0];
 
 	long kminPixel, lminPixel;
 	long kmaxPixel, lmaxPixel;
+
+	int growOrClip = 0;
+
+	if ( AUTO_RANGE_CLIP == lockAutoRanging ) {
+		growOrClip = ( USHRT_MAX == globalImgMin );
+	}
+
+	if ( AUTO_RANGE_GROW == lockAutoRanging ) {
+		growOrClip = 1;
+	}
 
 	if ( RERENDER_OPTIMIZATION ) {
 
@@ -2003,7 +2225,10 @@ void processThermalFrame( ProcessedThermalFrame *ptf, Mat *thermalFrame ) {
 		unsigned short *usMaxPtr      = &usStartPtr[TC_WIDTH * TC_HEIGHT];
 		long            ktotal        = 0; // Calculate average temps in thermal frame
 		// ************* BEGIN LOOP UNROLL ***************************
-		for ( ; (usKelvinPtr < usMaxPtr); usKelvinPtr += 8 ) {
+
+        	unsigned short *imgPtr = &((unsigned short *)(imageFrame.datastart))[0];
+
+		for ( ; (usKelvinPtr < usMaxPtr); usKelvinPtr += 8, imgPtr += 8 ) {
 			// Linear Parsing
 			// long kelvin = usKelvinPtr[0] + (usKelvinPtr[1] << 8); // LSByte + MSByte
 
@@ -2043,13 +2268,62 @@ void processThermalFrame( ProcessedThermalFrame *ptf, Mat *thermalFrame ) {
 			UNROLL_MAX(kmax, lmax, 5)
 			UNROLL_MAX(kmax, lmax, 6)
 			UNROLL_MAX(kmax, lmax, 7)
+
+			if ( lockAutoRanging ) {
+
+#define UNROLL_IMG_MIN(g,n)	if ( g > *(imgPtr + n) ) { \
+					g = *(imgPtr + n); \
+				}
+
+				UNROLL_IMG_MIN(frameImgMin, 0)
+				UNROLL_IMG_MIN(frameImgMin, 1)
+				UNROLL_IMG_MIN(frameImgMin, 2)
+				UNROLL_IMG_MIN(frameImgMin, 3)
+				UNROLL_IMG_MIN(frameImgMin, 4)
+				UNROLL_IMG_MIN(frameImgMin, 5)
+				UNROLL_IMG_MIN(frameImgMin, 6)
+				UNROLL_IMG_MIN(frameImgMin, 7)
+
+
+#define UNROLL_IMG_MAX(g,n)	if ( g < *(imgPtr + n) ) { \
+					g = *(imgPtr + n); \
+				}
+
+				UNROLL_IMG_MAX(frameImgMax, 0)
+				UNROLL_IMG_MAX(frameImgMax, 1)
+				UNROLL_IMG_MAX(frameImgMax, 2)
+				UNROLL_IMG_MAX(frameImgMax, 3)
+				UNROLL_IMG_MAX(frameImgMax, 4)
+				UNROLL_IMG_MAX(frameImgMax, 5)
+				UNROLL_IMG_MAX(frameImgMax, 6)
+				UNROLL_IMG_MAX(frameImgMax, 7)
+
+			}
+
 		}
 		// ************* END LOOP UNROLL ***************************
-
+		
 		ptf->min.kelvin  = kmin;
 		ptf->max.kelvin  = kmax;
 		ptf->min.linearI = lmin;
 		ptf->max.linearI = lmax;
+
+		// Grab once for CLIP or GROW
+		if ( growOrClip ) {
+			if (globalImgMin > frameImgMin) globalImgMin = frameImgMin;
+			if (globalImgMax < frameImgMax) globalImgMax = frameImgMax;
+
+			if (globalKelvinMin > kmin) globalKelvinMin = kmin;
+			if (globalKelvinMax < kmax) globalKelvinMax = kmax;
+
+			globalKelvinRange = (globalKelvinMax - globalKelvinMin);
+			globalImgRange    = (globalImgMax    - globalImgMin);
+		}
+
+		frameKelvinMin    =  kmin;
+		frameKelvinMax    =  kmax;
+		frameKelvinRange  = (kmax - kmin);
+		frameImgRange     = (frameImgMax - frameImgMin);
 
 		// Controls to [un]lock colormap auto-ranging
 		ptf->minPixel.kelvin   = kminPixel; // kelvin is NOT kelvin here
@@ -2118,14 +2392,26 @@ void processThermalFrame( ProcessedThermalFrame *ptf, Mat *thermalFrame ) {
 	}
 
 	// Colormap autoranging requires camera hardware control which we don't have
-	float minPixelCelsius = ptf->minPixel.celsius = ptf->min.celsius;
-		                ptf->maxPixel.celsius = ptf->max.celsius;
 
-	float minMaxRange     = (ptf->maxPixel.celsius - minPixelCelsius);
+	if ( lockAutoRanging ) {
+		ptf->minPixel.celsius = kelvin2Celsius( globalKelvinMin );
+		ptf->maxPixel.celsius = kelvin2Celsius( globalKelvinMax );
+	} else {
+		ptf->minPixel.celsius = ptf->min.celsius;
+		ptf->maxPixel.celsius = ptf->max.celsius;
+	}
 
-  	unsigned short *usImgPtr = &((unsigned short *)(imageFrame.datastart))[0];
-	minPixel = usImgPtr[ ptf->min.linearI ];
-	maxPixel = usImgPtr[ ptf->max.linearI ];
+	float minPixelCelsius	= ptf->minPixel.celsius;
+	float minMaxRange 	= (ptf->maxPixel.celsius - minPixelCelsius);
+
+	if ( growOrClip ) {
+		minPixel = globalImgMin;
+		maxPixel = globalImgMax;
+	} else {
+  		unsigned short *usImgPtr = &((unsigned short *)(imageFrame.datastart))[0];
+		minPixel = usImgPtr[ ptf->min.linearI ];
+		maxPixel = usImgPtr[ ptf->max.linearI ];
+	}
 
 	// Track either crosshair temp or ruler crosshair temp on the colormap scale
 	float chCelsius   = (rulersOn ? user_CENTER_OF_RULER_INDEX->celsius : ptf->ch.celsius);
@@ -2133,6 +2419,9 @@ void processThermalFrame( ProcessedThermalFrame *ptf, Mat *thermalFrame ) {
 	float chFraction  = (chRange / minMaxRange);
 
 	float minMaxRangeKelvin   = (ptf->max.kelvin - ptf->min.kelvin);
+	if ( lockAutoRanging ) {
+		minMaxRangeKelvin = (globalKelvinMax - globalKelvinMin);
+	}
 	ptf->chLevelPixel.kelvin  = ptf->min.kelvin + (minMaxRangeKelvin * chFraction);
 	ptf->chLevelPixel.linearI = (lminPixel + lmaxPixel) * chFraction;
 	ptf->chLevelPixel.celsius = minPixelCelsius + chRange;
@@ -2144,6 +2433,12 @@ void processThermalFrame( ProcessedThermalFrame *ptf, Mat *thermalFrame ) {
 	calcTempDisplayLocations( ptf->chLevelPixel );
 
 	if ( RERENDER_OPTIMIZATION ) {
+		if ( lockAutoRanging ) {
+//strcpy( ptf->chLevelPixel.displayLabel,  ">" );
+//strcpy( ptf->avgLevelPixel.displayLabel, "-" );
+			ptf->minPixel.kelvin   = globalKelvinMin;
+			ptf->maxPixel.kelvin   = globalKelvinMax;
+		}
 
 		ptf->avg1Pixel.celsius = (minPixelCelsius + (minMaxRange * 0.2));
 		ptf->avg2Pixel.celsius = (minPixelCelsius + (minMaxRange * 0.4));
@@ -2643,7 +2938,7 @@ void printUsage() {
   printf("\n");
   printf( "Camera Usage: \n\t%s -d n (where 'n' is the number of the desired video camera)\n\n", Argv0 );
   printf( "Offline Usage: \n\t%s -f input.raw (where input.raw is a raw dump file from %s)\n\n", Argv0, Argv0 );
-  printf( "Optional flags:  [-rotate n] [-scale n] [-cmap n] [-fps n] [-font n] [-clip n] [-thick n]\n");
+  printf( "Optional flags:  [-rotate n] [-scale n] [-fullscreen ] [-cmap n] [-fps n] [-font n] [-clip n] [-thick n]\n");
 #if 0
   printf( "                 [-help] [-quiet] [-snapshot [prefix]] [-record [prefix]]\n\n");
 #else
@@ -2670,8 +2965,9 @@ void printKeyBindings() {
   printf("h  : Cycle through overlayed screen data\n");
   printf("t  : Toggle between Celsius and Fahrenheit\n");
   printf("y  : Toggle Historgram filter (for gray scales)\n");
-// Need internal camera control to lock camera from rescaling
-//  printf("l  : Lock/Unlock colormap auto ranging\n");
+// Emulating locking camera's auto ranging the colormap
+  printf("l  : [Un]Lock camera's colormap auto ranging\n");
+  printf("i k: Cycle [for|back]wards through locked auto ranging mapping methods\n");
   printf("8  : Rotate display 0, 90, 180, 270 degrees (Portrait and Landscape)\n");
   printf("e  : Toggle Freeze Frame on/off\n");
   printf("o  : Displays and cycles through %d temp ruler modes\n", RULERS_MAX_MOD-1);
@@ -2790,6 +3086,44 @@ void processKeypress(int c, ProcessedThermalFrame *ptf, Mat *frame ) {
 		case 'j': reColormap( 1); break; // Colormap
 		case 'm': reColormap(-1); break;
 
+		case 'i': filterType--;
+			  if (filterType < 0) {
+				  filterType = FILTER_TYPE_MAX-1;
+			  }
+			  goto FILTER_TYPE_CHANGE;
+			  break;
+		case 'k': 
+			  filterType  = (filterType + 1) % FILTER_TYPE_MAX;
+
+FILTER_TYPE_CHANGE:
+			  
+			  thermalRangeFilter_FxPtr = (FILTER_TYPE_LINEAR == filterType ) ?
+							  &thermalRangeFilter_Linear :
+							  &thermalRangeFilter_Generic;
+			  if ( ! quietStdout ) { 
+				printf("Mapping filter: %s\n", filterTypeStr( filterType ) );
+			  }
+
+			  filterType2 = ((FILTER_TYPE_LINEAR_2 == filterType) ||
+					 (FILTER_TYPE_CENTER_2 == filterType) ||
+					 (FILTER_TYPE_OUTER_2  == filterType) );
+			  threadData.configurationChanged++;
+			  break;
+
+
+		case 'l': lockAutoRanging = (lockAutoRanging + 1) % AUTO_RANGE_MAX;
+			  threadData.configurationChanged++;
+			  {
+				// Reset autoRanging controls
+				globalKelvinMin = USHRT_MAX;
+				globalKelvinMax = 0;
+				globalImgMin = USHRT_MAX;
+				globalImgMax = 0;
+				frameImgMin  = USHRT_MAX;
+				frameImgMax  = 0;
+			  }
+			  break;
+
 		case 'y': 
 			  threadData.configurationChanged++;
 			  Use_Histogram = !Use_Histogram; break; // Temp filter
@@ -2826,7 +3160,13 @@ void processKeypress(int c, ProcessedThermalFrame *ptf, Mat *frame ) {
 			  }
 			  break;    // Reset Defaults
 
-		case 'p': snapshot(frame, 0x00); break;  // Snapshot
+		case 'p': 
+			  snapshot(frame, 0x00); 
+#if 0
+			dumpStuff();
+#endif
+
+			  break;  // Snapshot
 
 		case 'o': // Cycle [1 - (MAX_MOD-1)], not [0 - (MAX_MOD-1)]
 			  threadData.configurationChanged++;
@@ -3072,7 +3412,17 @@ void drawCmapScale( Mat &cmapScale, int roiJumpWidth ) {
 
 	int scaledSFHeight = controls.scaledSFHeight;
 
-	double range  = maxPixel - minPixel;
+	double range;
+	long   localMaxPixel;
+
+	if ( lockAutoRanging ) {
+		range		= globalImgMax - globalImgMin;
+		localMaxPixel	= globalImgMax;
+	} else {
+		range		= maxPixel - minPixel;
+		localMaxPixel	= maxPixel;
+	}
+
 	double factor = (range / (float)scaledSFHeight);
 
 	unsigned short *datastart = &((unsigned short *)(cmapScale.datastart))[ 0 ];
@@ -3084,7 +3434,7 @@ void drawCmapScale( Mat &cmapScale, int roiJumpWidth ) {
 
 		// Colormap scale is a range [minPixel to maxPixel] starting at minPixel, NOT 0x00
 		// Transisiton from maxPixel on top to minPixel on bottom ...
-		rowPixel = maxPixel - ((float)i * factor); 
+		rowPixel = localMaxPixel - ((float)i * factor); 
 
 		// Calculate linear offset (row, column)
 	        usRowPtr = &(datastart)[ (i * roiJumpWidth) ];
@@ -3103,6 +3453,32 @@ void drawCmapScale( Mat &cmapScale, int roiJumpWidth ) {
 
 	cvtColor(cmapScale, cmapScale, COLOR_YUV2BGR_YUYV, CVT_CHAN_FLAG);  // Same as video frame
 	applyMyColorMap( cmapScale, cmapScale, controls.cmapCurrent );
+
+	if ( lockAutoRanging ) {
+#define REDUCED_SIZE 0.8
+		float fontScale = (HudFontScale * REDUCED_SIZE);
+		int   baseline  = 0;
+
+		const char *icon = ( AUTO_RANGE_CLIP == lockAutoRanging ) ? "-" : "+";
+		Size textSize = getTextSize( icon, DEFAULT_FONT, fontScale, 2, &baseline );
+		// Center text horizontally
+		int x = (ColorScaleWidth/2) - (textSize.width/2);
+		int y = textSize.height * 2;
+
+		Point point;
+		POINT( point, x, y );
+		putText(cmapScale, icon, point, DEFAULT_FONT, fontScale, GRAY,  2, LINE_8);
+		putText(cmapScale, icon, point, DEFAULT_FONT, fontScale, WHITE, 1, LINE_AA);
+
+		char buf[32];
+		sprintf(buf, "%X", filterType); // 0123456789ABCDEF
+		textSize = getTextSize( buf, DEFAULT_FONT, fontScale, 2, &baseline );
+		x = (ColorScaleWidth/2) - (textSize.width/2);
+		POINT( point, x, y + (2 * textSize.height) );
+		putText(cmapScale, buf, point, DEFAULT_FONT, fontScale, GRAY,  2, LINE_8);
+		putText(cmapScale, buf, point, DEFAULT_FONT, fontScale, WHITE, 1, LINE_AA);
+	}
+
 }
 
 #define L_X	( hudSpaceSize.width / 2 )		// Left X margin
@@ -3143,27 +3519,28 @@ void drawHelp( Mat &rgbHUD ) {
 
 		PT(  0, "a z", ": Blur filter" );
 		PT(  1, "s x", ": Threshold degrees" );
-		sprintf( buf,": Window scale [1-%d]", MAX_SCALE_STEPS );
+		sprintf( buf,  ": Window scale [1-%d]", MAX_SCALE_STEPS );
 		PT(  2, "d c", buf );
-		PT(  3, "f v", ": Contrast" );
+		PT(  3, "f v", ": Contrast, l : Autorange" );
+		PT(  4, "i k", ": Autorange mapping" );
 		sprintf( buf,": Inerpolation (%d)", MAX_INTERS );
-		PT(  4, "g b", buf );
-		sprintf( buf,": Colormaps (%d)", MAX_CMAPS );
-		PT(  5, "j m", buf );
-		PT(  6, "w", ": Window layouts (4)" );
-		PT(  7, "5", ": Reset, 6 : Fullscreen" );
-		PT(  8, "r", ": Record (.avi)" );
-		PT(  9, "p", ": Snapshot (.png, .raw)" );
-		PT( 10, "h", ": OSD modes, 1 : Font" );
-		PT( 11, "t", ": C/F,  y : Histogram" );
-		PT( 12, "8", ": Rotate, e Freeze" );
-		sprintf( buf,": Ruler modes (%d)", RULERS_MAX_MOD-1 );
-		PT( 13, "o", buf );
-		PT( 14, "", "  3 : Clip, 4 : Size" );
-		PT( 15, "/", ": stdout, q : Quit" );
-		RT( 16, "Keypad arrows : Move rulers", x1 );
-		RT( 17, "L mb: Add temps, mv rulers", x1 );
-		RT( 18, "R mb: Del temps & rulers", x1 );
+		PT(  5, "g b", buf );
+		sprintf( buf,  ": Colormaps (%d)", MAX_CMAPS );
+		PT(  6, "j m", buf );
+		PT(  7, "w",   ": Window layouts (4)" );
+		PT(  8, "5",   ": Reset, 6 : Fullscreen" );
+		PT(  9, "r",   ": Record (.avi)" );
+		PT( 10, "p",   ": Snapshot (.png, .raw)" );
+		PT( 11, "h",   ": OSD modes, 1 : Font" );
+		PT( 12, "t",   ": C/F,  y : Histogram" );
+		PT( 13, "8",   ": Rotate, e Freeze" );
+		sprintf( buf,  ": Ruler modes (%d)", RULERS_MAX_MOD-1 );
+		PT( 14, "o", buf );
+		PT( 15, "",    "  3 : Clip, 4 : Size" );
+		PT( 16, "/",   ": stdout, q : Quit" );
+		RT( 17, "Keypad arrows : Move rulers", x1 );
+		RT( 18, "L mb: Add temps, mv rulers", x1 );
+		RT( 19, "R mb: Del temps & rulers", x1 );
 }
 
 static Point hudPoint;
@@ -3502,7 +3879,7 @@ void drawRulerPlot( Mat &frame, Point *sf1, Point *sf2, Scalar **scalar, int max
 // Eliminate array dereferencing by using Temperature pointers
 
 #undef  DO_USER
-#define DO_USER(n)   if ( user_##n->active ) { drawTempMarkerPtr( frame, *user_##n, GREEN ); } 
+#define DO_USER(n)   if ( user_##n->active ) { drawTempMarker_FxPtr( frame, *user_##n, GREEN ); } 
 
 #if DRAW_SINGLE_THREAD
 
@@ -3895,7 +4272,7 @@ void histogramWrapper( Mat &src, Mat &dst, int who )
 #endif
 	int max = src.rows * src.cols;
 
-	ASSERT(( max == src.total() ))
+	ASSERT(( (size_t)max == src.total() ))
 
 	// max 33022 min 32768 delta 254
 
@@ -3941,6 +4318,316 @@ void histogramWrapper( Mat &src, Mat &dst, int who )
 	}
 	// *************** END POINTER LOOP UNROLL VERSION  ******************
 //printf("< %s(%d) %d x %d\n", __func__, __LINE__, src.rows, src.cols ); FF();
+}
+
+// Unit Circle x^2 + y^2 = 1.0
+//
+//    sinθ = Altitude/Hypoteuse = y/1
+//    cosθ = Base / Hypotenuse  = x/1
+//
+// degrees=  0, x=0.000000, y=1.000000
+// degrees= 15, x=0.258819, y=0.965926
+// degrees= 30, x=0.500000, y=0.866025
+// degrees= 45, x=0.707107, y=0.707107
+// degrees= 60, x=0.866025, y=0.500000
+// degrees= 75, x=0.965926, y=0.258819
+// degrees= 90, x=1.000000, y=-0.000000
+// degrees=105, x=0.965926, y=-0.258819
+// degrees=120, x=0.866025, y=-0.500000
+// degrees=135, x=0.707107, y=-0.707107
+// degrees=150, x=0.500000, y=-0.866025
+// degrees=165, x=0.258819, y=-0.965926
+// degrees=180, x=-0.000000, y=-1.000000
+//
+
+// Unit Circle
+#define DEG_2_RAD(degrees)      (((degrees) * M_PI) / 180.0)
+#define DEG_2_X(degrees)        sin( DEG_2_RAD( degrees) )
+#define DEG_2_Y(degrees)        cos( DEG_2_RAD( degrees ) )
+
+// Convert degrees to unit circle x, y with scaling and ceiling
+#define DEG_2_UNIT_X(degrees, scale, ceiling)  MIN( scale * DEG_2_X(degrees), ceiling )
+#define DEG_2_UNIT_Y(degrees, scale, ceiling)  MIN( scale * DEG_2_Y(degrees), ceiling )
+
+float sin180( float zero2One ) { // NO SHIFT
+        float degree = ( zero2One * 180.0 );
+        float thisX  = DEG_2_UNIT_X( degree, 1.0, 1.0 );
+        thisX = (degree <= 90) ? (thisX * 0.5) : 0.5 + (0.5 * (1.0 - thisX));
+        return thisX;
+}
+
+float cos360( float zero2One ) { // NO SHIFT
+        float degree = ( zero2One * 360.0 );
+        float thisX  = DEG_2_UNIT_Y( degree, 1.0, 1.0 );
+        thisX = (thisX * 0.5) + 0.5;
+        thisX = (degree <= 180) ? (0.5 - (thisX * 0.5)) : 0.5 + (0.5 * thisX);
+        return thisX;
+}
+
+float ucDeg( float zero2One, float deg, float s_deg, float c_deg ) { // Unit Circle, x from -deg/2 to deg/2 degrees
+        deg = deg / 2.0;
+
+
+#if 0
+//	s_deg = DEG_2_X(deg * 2); // TODO-FIXME - pre-calc the final static ones
+//	c_deg = DEG_2_Y(deg / 2);
+#endif
+
+        float range = 1.0 - c_deg;
+
+        float x = ( zero2One * 2.0 * s_deg ) - s_deg;
+        float y = sqrt( 1.0 - (x * x) );
+
+        y = (y - c_deg) / range; // normalize zero2One;
+
+        y = 0.5 * y;
+
+        y = ( zero2One < 0.5 ) ? y : (1.0 - y);
+        return y;
+}
+
+#define BASE_PIXEL 32768
+#define MAX_PIX    254.0
+
+// Calculate once, use infinately
+#define I_DECLARE(deg) \
+        static float	s_deg_##deg = DEG_2_X( deg ); \
+	static float	c_deg_##deg = DEG_2_Y( deg );
+
+#define I_USE(deg)	deg, s_deg_##deg, c_deg_##deg
+
+I_DECLARE(179)
+I_DECLARE(135)
+I_DECLARE(90)
+I_DECLARE(2)
+
+unsigned short thermalRangeFilter_Generic( unsigned int thermalPixel ) {
+
+	if ( FILTER_TYPE_NONE == filterType ) {
+		return thermalPixel;
+	}
+
+	// Do range clipping
+	if	  ( thermalPixel <= globalKelvinMin ) {	// Low Clip
+		thermalPixel = globalKelvinMin;		// Range lock to colormap scale 
+	} else if ( thermalPixel >= globalKelvinMax ) {	// High Clip
+		thermalPixel = globalKelvinMax;		// Range lock to colormap scale
+	}
+
+	// FILTER_TYPE_LINEAR Thermal Pixel in range [ 0.0 - 1.0 ]
+	float zero2One = (float)( thermalPixel - globalKelvinMin ) / (float)globalKelvinRange;
+
+	float degree, thisY;
+	switch ( filterType ) {
+		case FILTER_TYPE_COS360: zero2One = cos360( zero2One ); break;
+// These are closer to stock
+		case FILTER_TYPE_SIN180: zero2One = sin180( zero2One );	break;
+		case FILTER_TYPE_UC180:  zero2One = ucDeg( zero2One, I_USE(179) ); break;
+		case FILTER_TYPE_UC135:  zero2One = ucDeg( zero2One, I_USE(135) ); break;
+		case FILTER_TYPE_UC90:   zero2One = ucDeg( zero2One, I_USE(90) ); break;
+		case FILTER_TYPE_UC2:    zero2One = ucDeg( zero2One, I_USE(2) ); break;
+
+//		case FILTER_TYPE_CENTER: // same as SIN_180
+		case FILTER_TYPE_CENTER_2: zero2One = sin180( zero2One ); break;
+
+		case FILTER_TYPE_OUTER:
+		case FILTER_TYPE_OUTER_2:
+			degree		= ( zero2One * 180.0 );
+			thisY		=   DEG_2_UNIT_Y( degree, 1.0, 1.0 );
+			zero2One	= ( degree <= 90.0 ) ? (0.5 * (1.0 - thisY)) : (0.5 + (-0.5 * thisY));
+			break;
+		default:
+			break;
+	}
+
+	if ( filterType2 ) {
+		if 	  ( FILTER_TYPE_LINEAR_2 <= filterType ) {
+			zero2One = 0.1 + (0.9 * zero2One);
+		} else if ( FILTER_TYPE_CENTER_2 <= filterType ) {
+			zero2One = 0.025 + (0.975 * zero2One);
+		} else if ( FILTER_TYPE_OUTER_2 == filterType ) { 
+			// OUTER_2 tends to be a bit darker, so raise it up higher
+			zero2One = 0.1 + (0.9 * zero2One);
+		}
+	}
+
+#define D_OFFSET 0 // 10
+	unsigned int imagePixel = D_OFFSET + (( MAX_PIX - D_OFFSET ) * zero2One);
+
+	ASSERT( ( imagePixel <= MAX_PIX ) )
+	return ((BASE_PIXEL + imagePixel) & 0x000080FF );
+}
+
+
+unsigned short thermalRangeFilter_Linear( unsigned int thermalPixel ) {
+
+	// Do range clipping
+	if	  ( thermalPixel <= globalKelvinMin ) {	// Low Clip
+		thermalPixel = globalKelvinMin;		// Range lock to colormap scale 
+	} else if ( thermalPixel >= globalKelvinMax ) {	// High Clip
+		thermalPixel = globalKelvinMax;		// Range lock to colormap scale
+	}
+
+	// FILTER_TYPE_LINEAR Thermal Pixel in range [ 0.0 - 1.0 ]
+	float zero2One = (float)( thermalPixel - globalKelvinMin ) / (float)globalKelvinRange;
+
+	// zero2One = sinLeft( zero2One );
+#define DELTA_OFFSET 0
+	unsigned int imagePixel = DELTA_OFFSET + (( MAX_PIX - DELTA_OFFSET ) * zero2One);
+
+	return ((BASE_PIXEL + imagePixel) & 0x000080FF );
+}
+
+
+unsigned short imageRangeFilter( unsigned int framePixel ) {
+
+	// NOTE: framePixel and globalPixel may have their own offsets from BASE_PIXEL 32768
+	//       These offsets can change from the camrea (contrast ???)
+	// framePixel  is relative to frameImgRange,   required to psuedo calc Kelvin
+	// globalPixel is relative to globalImgeRange, required to psuedo calc Kelvin
+
+	ASSERT( ( BASE_PIXEL <= framePixel ) )
+
+
+	// pixel needs to be normalaized with the franes min/max pixel range
+	unsigned int frameImgPix = (framePixel - frameImgMin);
+
+	ASSERT( ( frameImgPix <= MAX_PIX ) )
+
+	ASSERT( ( (framePixel - BASE_PIXEL) <= MAX_PIX ) )
+
+	unsigned int pix2Kelvin = frameKelvinMin +
+		( ((float)(frameImgPix) * (float)frameKelvinRange) / (float)frameImgRange );
+
+	ASSERT( ( frameKelvinMin <= pix2Kelvin ) )
+	ASSERT( ( pix2Kelvin <= frameKelvinMax ) )
+
+	unsigned int min = globalImgMin - BASE_PIXEL;
+	unsigned int max = globalImgMax - BASE_PIXEL;
+
+	if	  ( pix2Kelvin <= globalKelvinMin ) { // Low Clip
+		framePixel = min;	// Range lock to colormap scale 
+	} else if ( pix2Kelvin >= globalKelvinMax ) { // High Clip
+		framePixel = max;	// Range lock to colormap scale
+	} else {		// Rescale with in global kelvin range
+		framePixel = min + (globalImgRange * (float)(pix2Kelvin - globalKelvinMin)) / 
+			                (float)globalKelvinRange;
+	}
+
+	if (framePixel > max) {
+	printf("framePixel %u:max %u, pix2Kelvin %u, frameImgMax %u, globalImgMin %u, globalImgMax %u\n",
+		framePixel, max, pix2Kelvin, frameKelvinMax, globalKelvinMin, globalKelvinMax );
+
+		framePixel = max;
+	}
+
+	if (framePixel > MAX_PIX) {
+	printf("framePixel %u, pix2Kelvin %u, frameImgMax %u, globalImgMin %u, globalImgMax %u\n",
+		framePixel, pix2Kelvin, frameKelvinMax, globalKelvinMin, globalKelvinMax );
+	}
+
+	ASSERT( ( framePixel <= MAX_PIX ) )
+
+	framePixel += BASE_PIXEL;
+#if 0
+	printf("framePixel %u, pix2Kelvin %u, frameImgMax %u, globalImgMin %u, globalImgMax %u\n",
+		framePixel, pix2Kelvin, frameKelvinMax, globalKelvinMin, globalKelvinMax );
+#endif
+
+	// 0x80FF = 33023 = 32768 + 255
+	return ( framePixel & 0x000080FF );
+}
+
+// This method will auto-range because it works straight from frameKelvinMid * frameKelvinRange
+unsigned short thermal2Image( unsigned int thermalPixel ) {
+	float zero2One = (((float)thermalPixel - (float)frameKelvinMin) / (float)frameKelvinRange);
+	thermalPixel   = (( MAX_PIX * zero2One ) + BASE_PIXEL);
+	return ( thermalPixel & 0x000080FF );
+}
+
+// Akin to FILTER_TYPE_LINEAR
+void thermalToImagePixel( Mat &src, Mat &dst ) {
+	int max = src.rows * src.cols;
+
+	unsigned short *srcPtr  = &((unsigned short *)(src.datastart))[0];
+	unsigned short *maxPtr  = &((unsigned short *)(src.datastart))[max];
+	unsigned short *dstPtr  = &((unsigned short *)(dst.datastart))[0];
+
+#ifdef MAX_RANGE
+#undef MAX_RANGE
+#endif
+#define MAX_RANGE(n) *(dstPtr+n) = (unsigned short)thermal2Image( *(srcPtr+n) );
+
+	for ( ; srcPtr < maxPtr; srcPtr += 8, dstPtr += 8) { // Copy CV_8UC2 into CV_8UC1 to make monochrome
+		MAX_RANGE(0)
+		MAX_RANGE(1)
+		MAX_RANGE(2)
+		MAX_RANGE(3)
+		MAX_RANGE(4)
+		MAX_RANGE(5)
+		MAX_RANGE(6)
+		MAX_RANGE(7)
+	}
+}
+
+void unsharpMask( Mat &src, Mat &dst ) {
+	// E
+	// Edge enhancement filter
+	/*
+		addWeighted() is used here as follows:
+		dst = cv2.addWeighted(src1, alpha, src2, beta, gamma)
+		Giving you the following transformation:
+		dst = src1*alpha + src2*beta + gamma
+	*/
+
+	// Size(0,0) has sigma automatically calculated
+	Mat gaussian;
+#if 1
+	cv::GaussianBlur( dst, gaussian, Size(0, 0), 2.0 );
+#else
+	cv::GaussianBlur( src, gaussian, Size(0, 0), 2.5 );
+#endif
+
+#define alpha_flag    2   // Overshoot  of [0-1]
+#define beta_flag    -1   // Undershoot of [0-1]
+
+	cv::addWeighted( src, alpha_flag, gaussian, beta_flag, 0, dst );
+}
+
+void lockAutoRangeFilter( Mat &src, Mat &dst ) {
+	/*****************************************************************************
+		Emulate Disabling auto ranging:
+	*****************************************************************************/
+	ASSERT(( 0.0 != globalKelvinRange ))
+
+	int max = src.rows * src.cols;
+
+	unsigned short *srcPtr  = &((unsigned short *)(src.datastart))[0];
+	unsigned short *maxPtr  = &((unsigned short *)(src.datastart))[max];
+	unsigned short *dstPtr  = &((unsigned short *)(dst.datastart))[0];
+
+	// 32768               = 0x00008000
+	// 32768 + 255 = 33023 = 0x000080FF
+	// 32768 + 254 = 33022 = 0x000080FE
+
+#ifdef MAX_RANGE
+#undef MAX_RANGE
+#endif
+#define MAX_RANGE(n) *(dstPtr+n) = (unsigned short)thermalRangeFilter_FxPtr( *(srcPtr+n) );
+			
+	for ( ; srcPtr < maxPtr; srcPtr += 8, dstPtr += 8) { // Copy CV_8UC2 into CV_8UC1 to make monochrome
+		MAX_RANGE(0)
+		MAX_RANGE(1)
+		MAX_RANGE(2)
+		MAX_RANGE(3)
+		MAX_RANGE(4)
+		MAX_RANGE(5)
+		MAX_RANGE(6)
+		MAX_RANGE(7)
+	}
+
+	// Add edge enhancement filter
+	unsharpMask( dst, dst );
 }
 
 
@@ -4163,8 +4850,10 @@ int parseArgs( int argc, char *argv[], char *camera, VideoCapture &cap, Processe
 		hasNext = (next < argc);
 
 		if ( ! strcmp( argv[i], "-scale") && hasNext ) {
-			MyScale = abs( atoi( argv[ i + 1 ] ) ) % MAX_SCALE_STEPS;
+			MyScale = abs( atoi( argv[ i + 1 ] ) ) % (MAX_SCALE_STEPS+1);
 			i++;
+		} else if ( ! strcmp( argv[i], "-fullscreen") ) {
+			controls.fullscreen = 1;
 		} else if ( ! strcmp( argv[i], "-font") && hasNext ) {
 			UserFont = abs( atoi( argv[ i + 1 ] ) ) % MAX_USER_FONT;
 			i++;
@@ -4224,6 +4913,7 @@ printf("\n%s-record [prefix] is coming soon ...\n%s", BLUE_STR(), RESET_STR() );
 			if ( ! quietStdout ) {
 //				printf("%s(%d): Opening file %s\n", __func__,__LINE__, threadData.inputFile); FF();
 			}
+			filterType  = FILTER_TYPE_NONE; // Show Nuked Kelvin data in WINDOW_DOUBLE
 			inputNotFound = 0;
 			i++;
 		} else if (( ! strcmp( argv[i], "-d"      ) ||
@@ -4341,7 +5031,8 @@ int mainPrivate (int argc, char *argv[]) {
 
         Size  size; // Reuse automatic variable
         Point point;
-        Mat   source, *sourcePtr;
+        //Mat   source, *sourcePtr;
+        Mat   *sourcePtr;
 
 	// NOTE: Misc extra processing has been moved to this shortest parallel
 	//       worker thread for THREAD LOAD BALANCING reasons
@@ -4400,9 +5091,9 @@ int mainPrivate (int argc, char *argv[]) {
 	{
 		Rulers_And_Drag		= ( rulersOn && (! leftDragOff) );
 		// Optimization: Don't draw halos while drag scrolling rulers
-		drawTempMarkerPtr	= Rulers_And_Drag ? &drawTempMarkerNoHalo : &drawTempMarker;
+		drawTempMarker_FxPtr	= Rulers_And_Drag ? &drawTempMarkerNoHalo : &drawTempMarker;
 
-		// Optimization: Capture state change varaiables ASAP after processKeyPress()
+		// Optimization: Capture state change varaiables ASAP after processKeypress()
 		//               and before worker threads are run
 		Rulers_Both		= (( RULERS_BOTH == rulersOn ) && ( HUD_ONLY_VIDEO != controls.hud ));
 		Rulers_XOR		= (( RULERS_VERT == rulersOn || RULERS_HORIZ == rulersOn) && ( HUD_ONLY_VIDEO != controls.hud ));
@@ -4736,7 +5427,7 @@ int mainPrivate (int argc, char *argv[]) {
 
 #if DRAW_SINGLE_THREAD
 			perfMax    = rdMain.renderMicros;
-			waitMicros = threadData.mainMicros - (rd->renderMicros + threadData.imshowMicros);
+			waitMicros = threadData.mainMicros - (rdMain.renderMicros + threadData.imshowMicros);
 #else
 			perfMax    = rdMain.renderMicros + threadData.thermMicros + threadData.imageMicros;
 			waitMicros = threadData.mainMicros - 

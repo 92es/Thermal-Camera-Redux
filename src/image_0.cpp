@@ -3,10 +3,24 @@
 
                 TS( imageMicros = currentTimeMicros(); )
 
+		pthread_mutex_lock( &lockAutoRangingMutex_image );
                 imageFrame = Mat( *(threadData.rawFrame), imageFrameROI ).clone();
                 if ( RotateDisplay ) { rotate( imageFrame, imageFrame, rotateFlags[ RotateDisplay ] ); }
+		pthread_mutex_unlock( &lockAutoRangingMutex_image );
 
                 if ( WINDOW_THERMAL != controls.windowFormat ) {
+
+			if ( lockAutoRanging ) {
+				if (	( ! threadData.inputFile ) && 
+					(FILTER_TYPE_NONE != filterType) )
+			       	{
+					// Can't access thermalFrame until it is split and rotated
+					pthread_mutex_lock( &lockAutoRangingMutex_therm );
+					// Offline mode, selectable mapping filters
+					lockAutoRangeFilter( thermalFrame, imageFrame );
+					pthread_mutex_unlock( &lockAutoRangingMutex_therm );
+				}
+			}
 
                         if ( Use_Histogram ) {
                                 histogramWrapper( imageFrame, imageFrame, 0 );

@@ -3,21 +3,21 @@
 
                 TS( thermMicros = currentTimeMicros(); )
 
-        //      try {
-                        processThermalFrame( ptf, &thermalFrame );
-        //      } catch (...) {
-        //              printf("\t%s(%d) - processThermalFrame exception\n", __func__, __LINE__);
-        //              fflush(stdout); fflush(stderr);
-        //      }
+		// Locking auto ranging puts early termal data mining requirements on 
+		// the image processing, thus processThermalFrame() gets called 
+		// earlier in IMAGE_0_CPP when lockAutoRanging is enabled
+		if ( ! lockAutoRanging ) {
+			processThermalFrame( ptf, &thermalFrame );
+		}
 
                 if ( controls.hud != HUD_ONLY_VIDEO )
                 {
                         // HAS TO BE DONE AFTER Min/Max/Avg has been calculated !!!
                         // THREAD LOAD BALANCING - Grab ruler row and column temps and points in parallel
 
-                        minF       = ptf->minPixel.celsius;
-                        maxF       = ptf->maxPixel.celsius;
-                        avgF       = ptf->avg.celsius;
+			minF       = ptf->min.celsius;
+			maxF       = ptf->max.celsius;
+			avgF       = ptf->avg.celsius;
                         float thresholdF = controls.threshold.celsius; // Threshold is a delta C or F
 
                         drawMin    = ( CorF( minF ) < (CorF( avgF ) - thresholdF) );

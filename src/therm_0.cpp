@@ -3,12 +3,24 @@
 
                 TS( thermMicros = currentTimeMicros(); )
 
-                thermalFrame = Mat( *(threadData.rawFrame), thermFrameROI ).clone();
-                if ( RotateDisplay ) { rotate( thermalFrame, thermalFrame, rotateFlags[ RotateDisplay ] ); }
+			pthread_mutex_lock( &lockAutoRangingMutex_therm );
+
+                	thermalFrame = Mat( *(threadData.rawFrame), thermFrameROI ).clone();
+                	if ( RotateDisplay ) { rotate( thermalFrame, thermalFrame, rotateFlags[ RotateDisplay ] ); }
+
+			if ( lockAutoRanging ) {
+				// processThermalFrame accesses imageFrame, 
+				// thus can't be called before imageFrame is split and rotated
+				pthread_mutex_lock( &lockAutoRangingMutex_image );
+				processThermalFrame( ptf, &thermalFrame );
+				pthread_mutex_unlock( &lockAutoRangingMutex_image );
+			}
+
+			pthread_mutex_unlock( &lockAutoRangingMutex_therm );
 
                 if ( WINDOW_IMAGE != controls.windowFormat ) {
 
-                        if ( Use_Histogram ) {
+                        if ( Use_Histogram || lockAutoRanging ) {
                                 // Write historgram to copy, not original
                                 // Changing thermalFrame will break subsequent call to processThermalFrame()
 				// Only realloate copy when absolutely necessary
@@ -20,11 +32,28 @@
 				} 
 
 				// Write Histrogram Equalization filter into copy 
-                                histogramWrapper( thermalFrame, copy, 1 );
+				if ( lockAutoRanging ) {
+					if ( FILTER_TYPE_NONE == filterType ) {
+						copy = thermalFrame.clone();
+					} else if ( threadData.inputFile ) {
+						// Allow different mapping filters
+						lockAutoRangeFilter( thermalFrame, copy );
+					} else {
+						// Use direct unlocked map
+						thermalToImagePixel( thermalFrame, copy );
+					}
+				}
+
+				if ( Use_Histogram ) {
+                                	histogramWrapper( 
+						(( lockAutoRanging ) ? copy : thermalFrame), copy, 1 );
+				}
+
                                 thermalFramePtr = &copy;
                         } else {
                                 thermalFramePtr = &thermalFrame;
                         }
+
 
                         // Convert the composited image copy to RGB
                         // cv::cvtColor (InputArray src, OutputArray dst, int code, int dstCn=0)
