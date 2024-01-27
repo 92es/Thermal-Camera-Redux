@@ -170,8 +170,8 @@ Tested by Amish Technician (from EEVblog) on numerous RPi models including RPi Z
     - Border widths dynamically resize based on current scale factor, font selction and -DDISPLAY_WIDTH=width constraint.
   - OSD informational display in left display border.
   - Colormap gradient widget in right display border.
-  - Landscape, double high layout with optional lock auto-ranging filter applied in 2nd window.
   - Feature requested by Amish Technician.
+  - Landscape, double high layout with optional lock auto-ranging filter applied in 2nd window.
 
 ![Screenshot](media/GITHUB_BORDER_LAYOUT_2.png)
 
