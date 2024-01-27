@@ -165,6 +165,15 @@ Tested by Amish Technician (from EEVblog) on numerous RPi models including RPi Z
 
 ![Screenshot](media/GIT_HUB_COLD.png)
 
+## Example 4: Optional V 0.9.3 border layout build mode
+  - Dynamic left and right border display areas.
+    - Border widths dynamically resize based on current scale factor, font selction and -DDISPLAY_WIDTH=width constraint.
+  - OSD informational display in left display border.
+  - Colormap gradient widget in right display border.
+  - Feature requested by Amish Technician.
+
+![Screenshot](media/GITHUB_BORDER_LAYOUT.png)
+
 ## Potential Future Upgrades:
 - Data logging over time.
 - User temp alarm triggers.
@@ -173,8 +182,17 @@ Tested by Amish Technician (from EEVblog) on numerous RPi models including RPi Z
 ## Credits:
 - LeoDJ's Kelvin conversion algorithm from post #216 on EEVblog
 - Les Wright's original Python script and corresponding YT video.
-- Amish Technician's gracious RPi testing and valuable feedback.
+- Amish Technician's gracious RPi testing, feature recommendations and valuable feedback.
 - Cynfab for thermal range testing on the InfiRay P2 Pro.
+- Matthias Wandel's helpful feature colaboration and RPi feedback.
+
+
+
+
+
+
+
+  
 
   
 
