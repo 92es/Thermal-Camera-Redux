@@ -21,6 +21,9 @@ Selecting fullscreen will scale from the currently select scale factor, thus wil
 Selecting the proper scale factor before entering fullscreen can taylor the fullscreen display. 
 
 ## 1X Scale ( DISPLAY_WIDTH border constraint )
+
+Note: Wide aspect ratio.
+
 ![Screenshot](../media/GITHUB_1X_BORDER.png)
 
 ## 2X Scale ( DISPLAY_WIDTH border constraint )
@@ -30,5 +33,7 @@ Selecting the proper scale factor before entering fullscreen can taylor the full
 ## Full Screen ( DISPLAY_WIDTH / DISPLAY_HEIGHT aspect ratio border constraint ):
 
 Note: Translucent OSD in left border is getting moved over the video frame as the borders shrink.
+
+Wide aspect ration has transitioned to the display's 5:3 aspect ratio.
 
 ![Screenshot](../media/GITHUB_FS_BORDER.png)
