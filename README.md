@@ -19,7 +19,8 @@ Rewritten with additional functionality, bug fixes, optimizations and offline po
   - Freeze Frame mode offers an additional level of control in unstable hand held scenarios.
 - Freeze frame, snapshots and recording.
 - Optional dynamic border layout build ( V 0.9.3 )
-  - See Example 4 below for details.
+  - See Example 4 below.
+  - Also see the [BORDER_LAYOUT notes for more information.](./doc/BORDER_LAYOUT.md)
 - Optionally lock live camera's color map auto-ranging ( V 0.9.2 )
   - Numerous temperature to color mapping options.
 - 4 layout modes displaying image and thermal data sub-frames.
@@ -168,8 +169,9 @@ Tested by Amish Technician (from EEVblog) on numerous RPi models including RPi Z
 ![Screenshot](media/GIT_HUB_COLD.png)
 
 ## Example 4: Optional V 0.9.3 border layout build mode
-  - Dynamic left and right border display areas.
-    - Border widths dynamically resize based on current scale factor, font selection and -DDISPLAY_WIDTH=width constraint.
+  - See the [BORDER_LAYOUT notes for more information.](./doc/BORDER_LAYOUT.md)
+  - Added dynamic left and right border display areas.
+    - Border widths dynamically resize based on current scale factor, font selection and (-DDISPLAY_WIDTH=width or Fullscreen) aspect ratio constraints.
   - OSD informational display in left display border.
   - Colormap gradient widget in right display border.
   - Feature requested by Amish Technician.
