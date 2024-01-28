@@ -1,4 +1,5 @@
 ## Optional V 0.9.3 border layout build mode
+  - To enable this feature, set -DBORDER_LAYOUT=1 in the build script and recompile.
   - Added dynamic left and right border display areas.
     - Border widths dynamically resize based on current scale factor, font selection and (-DDISPLAY_WIDTH=width or Fullscreen aspect ratio) constraints.
   - OSD informational display in left display border.
