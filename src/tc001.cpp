@@ -63,6 +63,9 @@ using namespace cv;
 	- Adding missing toCLUTSubRange() final conversion missing from V 0.9.2
 	- Added V 0.9.2 lock auto ranging fix to -DDRAW_SINGLE_THREAD=1 builds
 	- Regression test script duration 223.770 seconds
+  2024-01-27 - 0.9.3.a
+        - Fullscreen (with -DBORDER_LAYOUT=1) uses Aspect:Ratio border margin 
+	  compression vs DISPLAY_WIDTH compression
         
   
   Notes: Explore using cv::LUT() for custom colormaps
@@ -190,6 +193,24 @@ int64_t currentTimeNanos(){
 		  ts.tv_nsec  );
 #endif
 }
+
+#if 0
+#include <X11/Xlib.h> // Requires -llibX11
+
+// XDND - X Drag and Drop
+void getScreenResolution( int &width, int &height ) {
+	Display* disp = XOpenDisplay(NULL);
+	int count = XScreenCount( disp );
+	if ( 0 != disp ) {
+		// Only opens primary display
+		Screen*  scrn = DefaultScreenOfDisplay( disp );
+		width  = scrn->width;
+		height = scrn->height;
+		XCloseDisplay( disp ); 
+    		printf("Screen resolution: %dx%d\n", width, height);
+	}
+}
+#endif
 
 #if BORDER_LAYOUT
 static Mat borderFrame;
@@ -1479,7 +1500,9 @@ static void onMouseCallback( int event, int x, int y, int, void* ptr ) {
 	}
 
 #if BORDER_LAYOUT
+
 	x -= leftBorderWidth;
+
 #endif
 
 #if NO_DRAG // Use jump scroll on weak hardware like RPi 1 or RPi 2
@@ -5043,6 +5066,58 @@ printf("\n%s-record [prefix] is coming soon ...\n%s", BLUE_STR(), RESET_STR() );
 	return inputNotFound;
 }
 
+
+#if BORDER_LAYOUT
+
+void adjustSquishyBorders( int maxWidth ) {
+	// Test and adjust for Squishy borders	
+	// Squish left border first to delay squishing right border as a last resort
+	int delta = ( leftBorderWidth + controls.sW + rightBorderWidth ) - maxWidth;
+
+	if ( delta <= 0 ) {
+		// No squishy borders found
+		return;
+	}
+
+	int adjust    = 0;
+	int remainder = 0;
+
+	if ( leftBorderWidth < delta ) {
+		// Squishy left and right borders
+		// Hud/Help completely overlaps video frame
+		adjust    = leftBorderWidth;
+		remainder = delta - leftBorderWidth;
+	} else if ( 0 < delta ) {
+		// Squishy left border
+		// Hud/Help partially overlaps video frame
+		adjust = delta;
+	}
+
+	leftBorderWidth      -= adjust;
+	leftBorderDelta      -= adjust;
+	leftBorderDelta_tick -= adjust;
+
+	if ( 0 < remainder ) {
+		if ( controls.windowFormat != WINDOW_DOUBLE_WIDE ) {
+			// Squishy right border
+			if ( remainder <= ColorScaleWidth ) {
+				// Squish right border entirely 
+				// or by the width of the cmap band
+				rightBorderWidth     -= ColorScaleWidth;
+				leftBorderDelta      -= ColorScaleWidth;
+				leftBorderDelta_tick -= ColorScaleWidth;
+			} else {
+				// Standard compressed view
+				rightBorderWidth     = 0;
+				leftBorderDelta      = 0;
+				leftBorderDelta_tick = 0;
+			}
+		}
+	}
+}
+
+#endif
+
 int mainPrivate (int argc, char *argv[]) {
 	mainPrivateMicros = currentTimeMicros();
 
@@ -5223,56 +5298,25 @@ int mainPrivate (int argc, char *argv[]) {
 #define BORDER_LEFT_OFFSET    MIN( HelpWidth, SCALED_TC_WIDTH )
 #define BORDER_RIGHT_OFFSET   (ColorScaleWidth + CMAP_TEXT_WSize.width + MY_DELTA)
 
+
 		rightBorderWidth     = ( (controls.windowFormat == WINDOW_DOUBLE_WIDE) ?  0 : BORDER_RIGHT_OFFSET );
 
 		leftBorderWidth      = BORDER_LEFT_OFFSET;
 		leftBorderDelta      = (leftBorderWidth + ColorScaleWidth + (1.4 * CMAP_TEXT_WSize.width));
 		leftBorderDelta_tick = (leftBorderWidth + ColorScaleWidth + (CMAP_TEXT_WSize.width/2) );
 
-		{	// Test and adjust for Squishy borders	
-			// Squish left border first to delay squishing right border as a final measure
-			int delta = DISPLAY_WIDTH - ( leftBorderWidth + controls.sW + rightBorderWidth );
-			if ( delta < 0 ) {
-				int squishRightBorder = 0;
-				int adjust = 0;
-				// Squishy left border
-				if ( leftBorderWidth < abs( delta ) ) {
-					// Hud/Help completely overlaps video frame
-					adjust = leftBorderWidth;
-					squishRightBorder = 1;
-				} else {
-					// Hud/Help partially overlaps video frame
-					adjust = abs( delta );
-				}
-
-				leftBorderWidth      -= adjust;
-				leftBorderDelta      -= adjust;
-				leftBorderDelta_tick -= adjust;
-
-				if ( squishRightBorder ) {
-					// Squishy right border
-					if ( controls.windowFormat != WINDOW_DOUBLE_WIDE ) {
-						delta = DISPLAY_WIDTH - ( leftBorderWidth + controls.sW + rightBorderWidth );
-						if ( delta < 0 ) {
-							// Squish right border entirely 
-							// or by the width of the cmap band
-							if ( ColorScaleWidth < abs( delta ) ) {
-								// Standard compressed view
-								rightBorderWidth     = 0;
-								leftBorderDelta      = 0;
-								leftBorderDelta_tick = 0;
-							} else {
-								rightBorderWidth     -= ColorScaleWidth;
-								leftBorderDelta      -= ColorScaleWidth;
-								leftBorderDelta_tick -= ColorScaleWidth;
-							}
-						}
-					}
-				}
-			}
-
-			setCmapArrow( ptf ); // direction of arrow is layout dependant
+		if ( controls.fullscreen ) {
+			// Shrink by DISPLAY_WIDTH/DISPLAY_HEIGHT aspect ratio
+			// Fixed display size test
+			int idealWidth  = (float)SCALED_TC_HEIGHT * (float)DISPLAY_WIDTH / (float)DISPLAY_HEIGHT;
+			adjustSquishyBorders( idealWidth );
+		} else {
+			// Shrink by DISPLAY_WIDTH constraint
+			adjustSquishyBorders( DISPLAY_WIDTH );
 		}
+
+		setCmapArrow( ptf ); // direction of arrow is layout dependant
+
 #endif // BORDER_LAYOUT
 	}
 
