@@ -14,12 +14,12 @@ Depending on constrait permutations, the left and right border widths can shring
 Selecting fullscreen will scale from the currently select scale factor, thus may appear differnt from fullscreen from other scale factors.
 
 ## 1X Scale ( DISPLAY_WIDTH border constraint )
-![Screenshot](media/GITHUB_1X_BORDER.png)
+![Screenshot](../media/GITHUB_1X_BORDER.png)
 
 ## 2X Scale ( DISPLAY_WIDTH border constraint )
 
-![Screenshot](media/GITHUB_2X_BORDER.png)
+![Screenshot](../media/GITHUB_2X_BORDER.png)
 
 ## Full Screen ( DISPLAY_WIDTH / DISPLAY_HEIGHT aspect ratio border constraint ):
 
-![Screenshot](media/GITHUB_FS_BORDER.png)
+![Screenshot](../media/GITHUB_FS_BORDER.png)
