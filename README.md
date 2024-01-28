@@ -18,7 +18,8 @@ Rewritten with additional functionality, bug fixes, optimizations and offline po
   - Offline mode has great advantages over .png Snapshots because the raw thermal data can be represented with any configuration combinations at a later date as if it were live data.  No longer bound to a single colormap, scale, contrast, filter, etc. included in the static .png image.  Great for post documenting thermal audits depicting differnt data perspectives.
   - Freeze Frame mode offers an additional level of control in unstable hand held scenarios.
 - Freeze frame, snapshots and recording.
-- Optional dynamic border layout build ( V 0.9.3 ), see Example 4 below.
+- Optional dynamic border layout build ( V 0.9.3 )
+  - See Example 4 below for details.
 - Optionally lock live camera's color map auto-ranging ( V 0.9.2 )
   - Numerous temperature to color mapping options.
 - 4 layout modes displaying image and thermal data sub-frames.
