@@ -34,6 +34,8 @@ Note: Wide aspect ratio.
 
 Note: Translucent OSD in left border is getting moved over the video frame as the borders shrink.
 
-Wide aspect ration has transitioned to the display's 5:3 aspect ratio.
+Wide aspect ratio has transitioned to the display's 5:3 aspect ratio.
+
+The dynamic borders will try to adapt to varying display configurations.
 
 ![Screenshot](../media/GITHUB_FS_BORDER.png)
