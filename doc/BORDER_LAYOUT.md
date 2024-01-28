@@ -1,6 +1,6 @@
 ## Optional V 0.9.3 border layout build mode
   - Added dynamic left and right border display areas.
-    - Border widths dynamically resize based on current scale factor, font selection and (-DDISPLAY_WIDTH=width or Fullscreen) aspect ratio constraints.
+    - Border widths dynamically resize based on current scale factor, font selection and (-DDISPLAY_WIDTH=width or Fullscreen aspect ratio) constraints.
   - OSD informational display in left display border.
   - Colormap gradient widget in right display border.
   - Feature requested by Amish Technician.
