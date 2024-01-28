@@ -1,4 +1,4 @@
-## Optional V 0.9.3 border layout build mode
+# Optional V 0.9.3 border layout build mode
   - To enable this feature, set -DBORDER_LAYOUT=1 in the build script and recompile.
   - Added dynamic left and right border display areas.
     - Border widths dynamically resize based on current scale factor, font selection and (-DDISPLAY_WIDTH=width or Fullscreen aspect ratio) constraints.
@@ -28,5 +28,7 @@ Selecting the proper scale factor before entering fullscreen can taylor the full
 ![Screenshot](../media/GITHUB_2X_BORDER.png)
 
 ## Full Screen ( DISPLAY_WIDTH / DISPLAY_HEIGHT aspect ratio border constraint ):
+
+Note: Translucent OSD in left border is getting moved over the video frame as the borders shrink.
 
 ![Screenshot](../media/GITHUB_FS_BORDER.png)
