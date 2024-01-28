@@ -3,10 +3,12 @@
 
                 TS( imageMicros = currentTimeMicros(); )
 
+#if ! DRAW_SINGLE_THREAD // Moved to mainPrivate() for single thread builds
 		pthread_mutex_lock( &lockAutoRangingMutex_image );
                 imageFrame = Mat( *(threadData.rawFrame), imageFrameROI ).clone();
                 if ( RotateDisplay ) { rotate( imageFrame, imageFrame, rotateFlags[ RotateDisplay ] ); }
 		pthread_mutex_unlock( &lockAutoRangingMutex_image );
+#endif
 
                 if ( WINDOW_THERMAL != controls.windowFormat ) {
 

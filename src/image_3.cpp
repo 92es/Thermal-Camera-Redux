@@ -16,7 +16,11 @@
                                 pthread_mutex_lock( &videoOutMutex );
                                         // Protect videoOut and recordingActive
                                         if ( controls.recordingActive ) {
+#if BORDER_FRAME
+                                                ptf->videoOut.write( borderFrame );
+#else
                                                 ptf->videoOut.write( *threadData.rgbFrame );
+#endif
                                         }
                                 pthread_mutex_unlock( &videoOutMutex );
 

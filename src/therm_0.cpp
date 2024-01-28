@@ -5,15 +5,23 @@
 
 			pthread_mutex_lock( &lockAutoRangingMutex_therm );
 
+#if ! DRAW_SINGLE_THREAD // Moved to mainPrivate() for single thread builds
                 	thermalFrame = Mat( *(threadData.rawFrame), thermFrameROI ).clone();
                 	if ( RotateDisplay ) { rotate( thermalFrame, thermalFrame, rotateFlags[ RotateDisplay ] ); }
+#endif
 
 			if ( lockAutoRanging ) {
+#if ! DRAW_SINGLE_THREAD
 				// processThermalFrame accesses imageFrame, 
 				// thus can't be called before imageFrame is split and rotated
 				pthread_mutex_lock( &lockAutoRangingMutex_image );
+#endif
+
 				processThermalFrame( ptf, &thermalFrame );
+
+#if ! DRAW_SINGLE_THREAD
 				pthread_mutex_unlock( &lockAutoRangingMutex_image );
+#endif
 			}
 
 			pthread_mutex_unlock( &lockAutoRangingMutex_therm );
@@ -40,7 +48,14 @@
 						lockAutoRangeFilter( thermalFrame, copy );
 					} else {
 						// Use direct unlocked map
+#if 1
+						// Display image data in 2nd window
+						imageFrame.copyTo( copy );
+#else
+						// Display thermal data in 2nd window
+						// Used to debug/compare filters
 						thermalToImagePixel( thermalFrame, copy );
+#endif
 					}
 				}
 
