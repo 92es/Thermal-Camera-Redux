@@ -11,13 +11,14 @@ Ported and updated to Linux C/C++ app based on Les Wright's 21 June 2023 PyTherm
 A multi-threaded C/C++ app to read, parse, display thermal data from the Topdon TC001 Thermal camera (and clones).<br />
 Rewritten with additional functionality, bug fixes, optimizations and offline post processing.<br />
 
-## Features ( Version 0.9.2 ):
+## Features ( Version 0.9.3 ):
 <img align="right" src="media/22_of_37_Colormaps.png">
 
 - Live mode reading from USB camera and Offline mode for post processing analysis.
   - Offline mode has great advantages over .png Snapshots because the raw thermal data can be represented with any configuration combinations at a later date as if it were live data.  No longer bound to a single colormap, scale, contrast, filter, etc. included in the static .png image.  Great for post documenting thermal audits depicting differnt data perspectives.
   - Freeze Frame mode offers an additional level of control in unstable hand held scenarios.
 - Freeze frame, snapshots and recording.
+- Optional dynamic border layout build ( V 0.9.3 ), see Example 4 below.
 - Optionally lock live camera's color map auto-ranging ( V 0.9.2 )
   - Numerous temperature to color mapping options.
 - 4 layout modes displaying image and thermal data sub-frames.
