@@ -169,7 +169,7 @@ Tested by Amish Technician (from EEVblog) on numerous RPi models including RPi Z
 
 ## Example 4: Optional V 0.9.3 border layout build mode
   - Dynamic left and right border display areas.
-    - Border widths dynamically resize based on current scale factor, font selction and -DDISPLAY_WIDTH=width constraint.
+    - Border widths dynamically resize based on current scale factor, font selection and -DDISPLAY_WIDTH=width constraint.
   - OSD informational display in left display border.
   - Colormap gradient widget in right display border.
   - Feature requested by Amish Technician.
