@@ -7,11 +7,17 @@
 
 The folowing depicts possible border width resizing from 1X scale to Fullscreen.
 
-Note that the aspect ratio changes as scale changes (to keep square pixels) until it reaches Fullscreen.
+Note that the aspect ratio changes as scale changes ( to preserve square pixels ) until it reaches fullscreen.
 
-Depending on constrait permutations, the left and right border widths can shring to 0.
+At fullscreen, it adjusts border widths based on -DDISPLAY_WIDTH=width/-DDISPLAY_HEIGHT=height aspect ratio.
 
-Selecting fullscreen will scale from the currently select scale factor, thus may appear differnt from fullscreen from other scale factors.
+Depending on constrait permutations, the left and right border widths can shrink to 0.  
+
+Both border widths reduced to 0 displays the original default compact layout with the widgets overlaying the video frame.
+
+Selecting fullscreen will scale from the currently select scale factor, thus will appear differnt than other scale factors in fullscreen.  
+
+Selecting the proper scale factor before entering fullscreen can taylor the fullscreen display. 
 
 ## 1X Scale ( DISPLAY_WIDTH border constraint )
 ![Screenshot](../media/GITHUB_1X_BORDER.png)
