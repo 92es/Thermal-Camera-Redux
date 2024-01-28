@@ -28,8 +28,10 @@
   - ROTATION options:         [0, 90, 180, 270] </br>
 
 -DDISPLAY_WIDTH=1920 
+  -  Sets constraints for scaling and aspect ratio based fullscreen BORDER_LAYOUT.
 
 -DDISPLAY_HEIGHT=1080 
+  -  Sets constraints for scaling and aspect ratio based fullscreen BORDER_LAYOUT.
 
 -DUSE_CELSIUS=1 
   - Default temp display format:   [0, 1]  0 = Fahrenheit, 1 = Celsius
