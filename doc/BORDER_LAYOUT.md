@@ -30,12 +30,18 @@ Note: Wide aspect ratio.
 
 ![Screenshot](../media/GITHUB_2X_BORDER.png)
 
-## Full Screen ( DISPLAY_WIDTH / DISPLAY_HEIGHT aspect ratio border constraint ):
+## Full Screen ( DISPLAY_WIDTH / DISPLAY_HEIGHT aspect ratio border constraint )
 
 Note: Translucent OSD in left border is getting moved over the video frame as the borders shrink.
 
 Wide aspect ratio has transitioned to the display's 5:3 aspect ratio.
 
-The dynamic borders will try to adapt to varying display configurations.
+The dynamic borders will try to adapt to varying display combinations.
 
 ![Screenshot](../media/GITHUB_FS_BORDER.png)
+
+## Border widths reduced to 0
+
+Underer certain combinations, when both borders are reduced to 0, the original layout with overlapping widgets is obtained.
+
+![Screenshot](../media/GITHUB_00_BORDER.png)
