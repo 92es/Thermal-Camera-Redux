@@ -44,4 +44,6 @@ The dynamic borders will try to adapt to varying display combinations.
 
 Underer certain combinations, when both borders are reduced to 0, the original layout with overlapping widgets is obtained.
 
+Note: Inferno colormap depicted here versus Magma colormap used in previous images.
+
 ![Screenshot](../media/GITHUB_00_BORDER.png)
