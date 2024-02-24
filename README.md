@@ -178,6 +178,7 @@ Tested by Amish Technician (from EEVblog) on numerous RPi models including RPi Z
   - Landscape, double high layout with optional lock auto-ranging filter applied in 2nd window.
 
 ![Screenshot](media/GITHUB_BORDER_LAYOUT_2.png)
+![Screenshot](media/GITHUB_PC_BORDER.png)
 
 ## Potential Future Upgrades:
 - Data logging over time.
