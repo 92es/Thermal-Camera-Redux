@@ -11,7 +11,10 @@ rm ./redux
 #CFLAGS='-mavx -msse4.2 -msse4.1 -malign-double -march=ivybridge'
 
 # Skylake Intel Chips
-CFLAGS='-mavx2 -msse4.2 -msse4.1 -malign-double -march=skylake'
+#CFLAGS='-mavx2 -msse4.2 -msse4.1 -malign-double -march=skylake'
+
+# Generic - RaspPi
+CFLAGS='-march=native -mtune=native -pipe -fomit-frame-pointer'
 
 # 2023-12-05 release of Raspberry Pi OS desktop 64-bit (Debian 12 bookworm):
 # RPi 2 Model B v1.2  BCM2837    ARMv8-A     (64/32-bit)  4× Cortex-A53 900 MHz   
