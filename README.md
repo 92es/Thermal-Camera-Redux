@@ -85,7 +85,11 @@ Rewritten with additional functionality, bug fixes, optimizations and offline po
 
 ## Build requirememts:
 -  Linux, C/C++, OpenCV(V4L) and pthread libraries.
--  Optional build flags optimized for weak and single core / single threaded hardware.
+-  Optional build flags optimized for weak and single core / single threaded hardware. <br/>
+
+-  NOTE 1: Building on Debian 11 and newer Debian Linux based distros have a better likihood of working due to library compatability issues.
+   -  Distros like Arch, SUSE, Redhat, Fedora, BSD are not Debian based so there may be TBD issues.
+-  NOTE 2: Running as a Virtual Machine Guest OS client will probably NOT work because the VM can alter the USB video feed passed to the client OS, thus destroying the thermal data.
 
 ## Raspberry Pi Build Help:
 -  See the [RPi/SBC build help notes.](./doc/RPi.md)
