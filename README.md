@@ -102,6 +102,9 @@ Tested on IvyBridge & Coffee Lake Debian 11 PCs with all features working<br />
 Tested by Amish Technician (from EEVblog) on numerous RPi models including RPi Zero 2w, 2, 3, 4 and 5<br />
     using 2023-12-05 release of Raspberry Pi OS desktop 64-bit (Debian 12 bookworm)<br />
 
+Reported working (by Cynfab) on "InfiRay P2 Pro" thermal camera <br/>
+Reported working (by PMKrol, 2024/06/04) on "MaAnt Super IR Cam" thermal camera running on Ubuntu version 24.04 <br/>
+
 ## Camera Usage: <br />
   ./redux -d n (where 'n' is the number of the desired video camera)<br />
 
