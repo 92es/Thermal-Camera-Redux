@@ -98,7 +98,7 @@ Thermal Camera Redux:
 Built with display 2560x1600, max:default scale 8:4, rotation 0, default Fahrenheit, 37 colormaps, Jet,<br />
     Multi-threaded with drag scrolling<br />
 
-Tested on IvyBridge & Coffee Lake Debian 11 PCs with all features working<br />
+Tested on IvyBridge, SkyLake & CoffeeLake Debian 11 and 12 PCs with all features working<br />
 Tested by Amish Technician (from EEVblog) on numerous RPi models including RPi Zero 2w, 2, 3, 4 and 5<br />
     using 2023-12-05 release of Raspberry Pi OS desktop 64-bit (Debian 12 bookworm)<br />
 
