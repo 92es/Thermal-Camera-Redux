@@ -5610,14 +5610,6 @@ int mainPrivate (int argc, char *argv[]) {
 
 //printf("%s(%d) - Parallel worker threads finished %ld\n", __func__, __LINE__, currentTimeMicros()); FF();
 
-		if ( takeSnapshot ) {
-			printf("%s", GREEN_STR() );
-			printf("\nTaking snapshot and exiting\n");
-			snapshot( &rgbFrame, snapshotPrefix ); // Snapshot
-			printf("%s", RESET_STR() );
-			goto SHUTDOWN;
-		}
-
 		TS( int64_t imshowMicros = currentTimeMicros(); )
 
 #if BORDER_LAYOUT
@@ -5776,6 +5768,18 @@ int mainPrivate (int argc, char *argv[]) {
 		// Use following sleepMicros() to throttle FPS
 		int c = (char)waitKeyEx( 1 );
 #endif
+			
+                if ( takeSnapshot ) {
+                        printf("%s", GREEN_STR() );
+                        printf("\nTaking snapshot and exiting\n");
+#if BORDER_LAYOUT
+                        snapshot( &borderFrame, snapshotPrefix ); // Snapshot
+#else
+                        snapshot( &rgbFrame, snapshotPrefix ); // Snapshot
+#endif
+                        printf("%s", RESET_STR() );
+                        goto SHUTDOWN;
+                }
 
 #if 0
 		if ( takeRecording ) {
