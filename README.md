@@ -1,5 +1,5 @@
 # Thermal-Camera-Redux
- Topdon TC001 (and clones: InfiRay P2 Pro, MaAnt Super IR Cam, etc.) Linux thermal camera app to read and display live and offline thermal data.<br />
+ Topdon TC001 (and clones: Topdon TS001, InfiRay P2 Pro, MaAnt Super IR Cam, etc.) Linux thermal camera app to read and display live and offline thermal data.<br />
 
 Ported and updated to Linux C/C++ app based on Les Wright's 21 June 2023 PyThermalCamera Python app.<br />
   - All prior licenses apply.<br />
@@ -108,6 +108,7 @@ Tested by Amish Technician (from EEVblog) on numerous RPi models including RPi Z
 
 Reported working (by Cynfab) on "InfiRay P2 Pro" thermal camera <br/>
 Reported working (by PMKrol, 2024/06/04) on "MaAnt Super IR Cam" thermal camera running on Ubuntu version 24.04 <br/>
+Reported working (by Artag, 2024/07/15) on "Topdon TS001" thermal camera running on Debian 11 PC <br/>
 
 ## Camera Usage: <br />
   ./redux -d n (where 'n' is the number of the desired video camera)<br />
