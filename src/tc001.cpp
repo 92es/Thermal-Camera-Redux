@@ -1737,7 +1737,7 @@ void setScaleControls() {
 
 	// Scale Colormap Scale Widget width
 #if 1
-	ColorScaleWidth = 5 + MyScale;  // 5 to N
+	ColorScaleWidth = 6 + (MyScale / 2) * 2;  // Result is always even to fit for cvtColor using COLOR_YUV2BGR_YUYV
 #else
 	ColorScaleWidth = 3 + MyScale;  // 4 to N
 #endif
