@@ -1,0 +1,7 @@
+bkp/
+src/bkp/
+
+
+# bin
+src/redux
+src/test_driver

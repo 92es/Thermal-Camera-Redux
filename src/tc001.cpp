@@ -21,7 +21,7 @@ using namespace cv;
 
 #include "thread.h" // threads and FIFO ring buffer
 
-#define VERSION_STR "0.9.3"
+#define VERSION_STR "0.9.3.d"
 /*****************************************************************************************
 
   NOTE: No implied or expressed useability guarantee or warranty.  
@@ -64,10 +64,16 @@ using namespace cv;
 	- Added V 0.9.2 lock auto ranging fix to -DDRAW_SINGLE_THREAD=1 builds
 	- Regression test script duration 223.770 seconds
   2024-01-27 - 0.9.3.a
-        - Fullscreen (with -DBORDER_LAYOUT=1) uses Aspect:Ratio border margin 
+        - Fullscreen (with -DBORDER_LAYOUT=1) uses Aspect:Ratio border margin
 	  compression vs DISPLAY_WIDTH compression
-        
-  
+  2026-01-26 - 0.9.3.b
+        - Fixed -rotate flag causing crash by moving window operations after window creation
+  2026-01-26 - 0.9.3.c
+        - Added strict validation for -rotate flag (0, 90, 180, 270 degrees only)
+  2026-01-26 - 0.9.3.d
+        - Added -celsius flag to start with Celsius temperature units
+
+
   Notes: Explore using cv::LUT() for custom colormaps
   Notes: Explore more fixed-point for platforms without hardware FPU
   	  1 degree Fahrenheight = 255.928 Kelvin
@@ -3095,7 +3101,7 @@ void printUsage() {
   printf("\n");
   printf( "Camera Usage: \n\t%s -d n (where 'n' is the number of the desired video camera)\n\n", Argv0 );
   printf( "Offline Usage: \n\t%s -f input.raw (where input.raw is a raw dump file from %s)\n\n", Argv0, Argv0 );
-  printf( "Optional flags:  [-rotate n] [-scale n] [-fullscreen ] [-cmap n] [-fps n] [-font n] [-clip n] [-thick n]\n");
+  printf( "Optional flags:  [-rotate n] [-scale n] [-fullscreen ] [-celsius] [-cmap n] [-fps n] [-font n] [-clip n] [-thick n]\n");
 #if 0
   printf( "                 [-help] [-quiet] [-snapshot [prefix]] [-record [prefix]]\n\n");
 #else
@@ -4983,6 +4989,9 @@ int parseArgs( int argc, char *argv[], char *camera, VideoCapture &cap, Processe
 			i++;
 		} else if ( ! strcmp( argv[i], "-fullscreen") ) {
 			controls.fullscreen = 1;
+		} else if ( ! strcmp( argv[i], "-celsius") ) {
+			controls.useCelsius = Use_Celsius = 1;
+			controls.labelCF = " C";
 		} else if ( ! strcmp( argv[i], "-font") && hasNext ) {
 			UserFont = abs( atoi( argv[ i + 1 ] ) ) % MAX_USER_FONT;
 			i++;
@@ -5028,12 +5037,13 @@ printf("\n%s-record [prefix] is coming soon ...\n%s", BLUE_STR(), RESET_STR() );
 			i++;
 		} else if ( ! strcmp( argv[i], "-rotate") && hasNext ) {
 			threadData.configurationChanged++;
-			RotateDisplay = abs( atoi( argv[ i + 1 ] ) );
-			RotateDisplay = DECODE_ROTATION( RotateDisplay );
-			if ( 3 < RotateDisplay ) {
-				RotateDisplay = 0;
+			int rotateValue = atoi( argv[ i + 1 ] );
+			if ( rotateValue != 0 && rotateValue != 90 && rotateValue != 180 && rotateValue != 270 ) {
+				printf("%sInvalid rotation value: %d\n", RED_STR(), rotateValue);
+				printf("Valid rotation values: 0, 90, 180, 270 degrees\n%s", RESET_STR());
+				return -1;
 			}
-			rotateDisplay( ptf, 0 );
+			RotateDisplay = DECODE_ROTATION( rotateValue );
 			i++;
 		} else if (( ! strcmp( argv[i], "-f"    ) ||
 			     ! strcmp( argv[i], "-file" ) ) && hasNext ) {
@@ -5187,6 +5197,10 @@ int mainPrivate (int argc, char *argv[]) {
 	int64_t startup4 = currentTimeMicros();
 
 	newWindow( ptf ); // Should not start in fullscreen
+
+	if ( RotateDisplay != 0 ) {
+		rotateDisplay( ptf, 0 );
+	}
 
 	int64_t startup5 = currentTimeMicros();
 
